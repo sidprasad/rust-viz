@@ -731,8 +731,8 @@ fn parse_group_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::E
             }))
         } else {
             // Selector-based grouping
-            let selector = extract_string_from_tokens(&stripped, "selector")
-                .unwrap_or_else(|| "".to_string());
+            let selector =
+                extract_string_from_tokens(&stripped, "selector").unwrap_or_else(|| "".to_string());
             let name = extract_string_from_tokens(&stripped, "name")
                 .unwrap_or_else(|| "default".to_string());
             let add_edge = parse_add_edge(attr, &token_str, &stripped)?;
@@ -1115,7 +1115,9 @@ fn check_pattern(attr: &Attribute, pattern: &str) -> Result<(), syn::Error> {
         "solid" | "dashed" | "dotted" => Ok(()),
         other => Err(err(
             attr,
-            format!("invalid line pattern {other:?}; expected \"solid\", \"dashed\", or \"dotted\""),
+            format!(
+                "invalid line pattern {other:?}; expected \"solid\", \"dashed\", or \"dotted\""
+            ),
         )),
     }
 }
@@ -1144,7 +1146,10 @@ fn check_positive(attr: &Attribute, value: f64, what: &str) -> Result<(), syn::E
     if value.is_finite() && value > 0.0 {
         Ok(())
     } else {
-        Err(err(attr, format!("{what} must be a number greater than 0; got {value}")))
+        Err(err(
+            attr,
+            format!("{what} must be a number greater than 0; got {value}"),
+        ))
     }
 }
 
@@ -1222,8 +1227,8 @@ fn parse_add_edge(
     stripped: &str,
 ) -> Result<Option<AddEdgeTok>, syn::Error> {
     if let Some(body) = extract_group_from_tokens(tokens, "add_edge") {
-        let points = extract_string_from_tokens(&body, "points")
-            .unwrap_or_else(|| "none".to_string());
+        let points =
+            extract_string_from_tokens(&body, "points").unwrap_or_else(|| "none".to_string());
         check_points(attr, &points)?;
         return Ok(Some(AddEdgeTok::Block {
             points,
