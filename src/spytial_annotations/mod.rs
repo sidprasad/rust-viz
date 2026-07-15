@@ -9,7 +9,8 @@ pub mod runtime;
 // Re-export the main types and functions
 pub use runtime::{
     get_type_decorators, register_type_decorators, to_yaml, AlignConstraint, AlignParams,
-    Constraint, CyclicConstraint, CyclicParams, DecoProbe, DefaultDecorators, Directive,
-    GroupConstraint, GroupParams, HasSpytialDecorators, OrientationConstraint, OrientationParams,
-    SpytialDecorators, SpytialDecoratorsBuilder,
+    BorderStyle, Constraint, CyclicConstraint, CyclicParams, DecoProbe, DefaultDecorators,
+    Directive, FillStyle, GroupConstraint, GroupEdge, GroupEdgePoints, GroupEdgeValue, GroupParams,
+    HasSpytialDecorators, LinePattern, LineStyle, OrientationConstraint, OrientationParams,
+    SpytialDecorators, SpytialDecoratorsBuilder, TextSize, TextStyle,
 };

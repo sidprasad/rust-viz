@@ -354,7 +354,7 @@ fn parent_decorators_include_child_decorators() {
     let atom_colors: Vec<_> = parent_decs
         .directives
         .iter()
-        .filter(|d| matches!(d, Directive::AtomColor(_)))
+        .filter(|d| matches!(d, Directive::AtomStyle(_)))
         .collect();
     assert_eq!(
         atom_colors.len(),
@@ -382,7 +382,7 @@ fn child_decorators_are_independent() {
     let atom_colors: Vec<_> = child_decs
         .directives
         .iter()
-        .filter(|d| matches!(d, Directive::AtomColor(_)))
+        .filter(|d| matches!(d, Directive::AtomStyle(_)))
         .collect();
     assert_eq!(atom_colors.len(), 1, "child has only its own atom_color");
 }
@@ -526,7 +526,7 @@ fn multiple_annotation_types_all_captured() {
     assert!(decs
         .directives
         .iter()
-        .any(|d| matches!(d, Directive::AtomColor(_))));
+        .any(|d| matches!(d, Directive::AtomStyle(_))));
     assert!(decs
         .directives
         .iter()
@@ -654,7 +654,7 @@ fn mixed_decorated_and_undecorated_fields() {
     assert!(
         decs.directives
             .iter()
-            .any(|d| matches!(d, Directive::AtomColor(_))),
+            .any(|d| matches!(d, Directive::AtomStyle(_))),
         "Child's atom_color should be inherited"
     );
     assert!(
