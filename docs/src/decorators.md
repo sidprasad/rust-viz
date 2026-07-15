@@ -61,8 +61,8 @@ in the `left` relation, place `y` to the left of and below `x`."
 field. The pattern matches *any* matching node, not specific instances.
 
 ```rust
-#[atom_color(selector = "{x : RBNode | @:(x.color) = Red}",   value = "red")]
-#[atom_color(selector = "{x : RBNode | @:(x.color) = Black}", value = "black")]
+#[atom_style(selector = "{x : RBNode | @:(x.color) = Red}",   border_style(color = "red"))]
+#[atom_style(selector = "{x : RBNode | @:(x.color) = Black}", border_style(color = "black"))]
 ```
 
 **Stage 5 — hide the scaffolding.** The `Color` enum atoms, the `u32`
@@ -103,17 +103,47 @@ Every decorator is a Rust attribute on a type that derives
 
 ### Styling, filtering, and overrides
 
+Styling follows spytial-core 3.x's block system. Blocks are written as nested
+groups that mirror the YAML 1:1:
+
+- `line_style(color = "...", pattern = "solid" | "dashed" | "dotted", weight = 2.0, highlight = "...")` — a drawn edge line;
+- `text_style(size = "small" | "normal" | "large", color = "...")` — any label;
+- `border_style(color = "...", width = 2.0)` / `fill_style(color = "...")` — an atom's outline and interior.
+
+Every block field is optional — set only what you mean. Pattern/size/direction
+typos and non-positive weights are compile errors.
+
 | Attribute | What it does |
 |-----------|--------------|
-| `#[atom_color(selector = "...", value = "...")]` | Color matched atoms (`value` is any CSS color). |
+| `#[atom_style(selector = "...", border_style(...), fill_style(...), text_style(...))]` | Style matched atoms' border, interior fill, and label independently. |
 | `#[size(selector = "...", height = ..., width = ...)]` | Override node dimensions (in diagram units). |
 | `#[icon(selector = "...", path = "...", show_labels = ...)]` | Replace matched atoms with an image icon (`path` is a path or URL). |
-| `#[edge_style(field = "...", value = "...", style = "...", ...)]` | Style relation arrows (color, `solid`/`dashed`, weight, label, hidden). |
+| `#[edge_style(field = "...", line_style(...), text_style(...), show_label = ..., hidden = ...)]` | Style relation arrows: the drawn line, the edge's label, and visibility. |
 | `#[projection(sig = "...")]` | Project atoms of `sig` out of the main view. |
 | `#[hide_field(field = "...")]` | Suppress a relation from the rendering. |
 | `#[hide_atom(selector = "...")]` | Suppress matched atoms entirely. |
-| `#[inferred_edge(name = "...", selector = "...")]` | Define a synthetic edge derivable from the data. |
-| `#[tag(to_tag = "...", name = "...", value = "...")]` | Attach a computed attribute to matched atoms. |
+| `#[inferred_edge(name = "...", selector = "...", line_style(...), text_style(...))]` | Define a synthetic edge derivable from the data, optionally styled. |
+| `#[tag(to_tag = "...", name = "...", value = "...", text_style(...))]` | Attach a computed attribute to matched atoms. |
+| `#[attribute(field = "...", text_style(...))]` | (See Display above; `text_style` styles the attribute's line.) |
+
+A selector-based `group` additionally takes `add_edge` — the connector between
+the group's key and the group. Bare form `add_edge = "togroup"` (or
+`"fromgroup"`/`"none"`), or the styled block
+`add_edge(points = "togroup", line_style(...), text_style(...))` — plus a
+top-level `text_style(color = "...")` for the group's own label.
+
+**Migrating from the 2.x flat forms:** `#[atom_color(selector, value)]` and
+`#[edge_style(field, value, style, weight, ...)]` still compile and are
+rewritten onto the block forms — `atom_color`'s `value` becomes the *border*
+colour (that is what 2.x drew; reach for `fill_style` only if you want a
+filled look), and `edge_style`'s `value`/`style`/`weight` become
+`line_style`'s `color`/`pattern`/`weight`. Mixing flat keys and blocks in one
+`edge_style` is a compile error.
+
+> **Breaking in spytial-core 3.0:** two style rules that set the same property
+> of the same edge/atom to *different* values now raise a
+> `StyleCollisionError` at render time (2.x silently kept the first). Set each
+> property in exactly one matching rule.
 
 These map onto the same builder and YAML layer that spytial-core consumes,
 so anything expressible here is also expressible as a hand-written spec

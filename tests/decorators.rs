@@ -76,7 +76,7 @@ struct MultiTagged {
 }
 
 #[derive(Serialize, SpytialDecorators)]
-#[edge_style(field = "left", value = "#000000")]
+#[edge_style(field = "left", line_style(color = "#000000"))]
 struct EdgeStyledMinimal {
     id: u32,
 }
@@ -95,30 +95,82 @@ fn edge_style_directive_minimal() {
         .expect("expected an EdgeStyle directive");
 
     assert_eq!(edge.field, "left");
-    assert_eq!(edge.value, "#000000");
-    assert!(edge.style.is_none());
-    assert!(edge.weight.is_none());
+    let line = edge
+        .line_style
+        .as_ref()
+        .expect("expected a lineStyle block");
+    assert_eq!(line.color.as_deref(), Some("#000000"));
+    assert!(line.pattern.is_none());
+    assert!(line.weight.is_none());
+    assert!(edge.text_style.is_none());
     assert!(edge.show_label.is_none());
     assert!(edge.hidden.is_none());
     assert!(edge.filter.is_none());
     assert!(edge.selector.is_none());
 
     let yaml = to_yaml(&decorators).unwrap();
-    assert!(yaml.contains("edgeColor:"));
+    assert!(yaml.contains("edgeStyle:"));
     assert!(yaml.contains("field: left"));
-    // Optional fields are skipped when None.
-    assert!(!yaml.contains("style:"));
+    assert!(yaml.contains("lineStyle:"));
+    assert!(yaml.contains("color: '#000000'"));
+    // Optional leaves are skipped when None.
+    assert!(!yaml.contains("pattern:"));
     assert!(!yaml.contains("weight:"));
     assert!(!yaml.contains("showLabel:"));
     assert!(!yaml.contains("hidden:"));
+    assert!(!yaml.contains("textStyle:"));
+}
+
+#[derive(Serialize, SpytialDecorators)]
+#[edge_style(field = "left")]
+struct EdgeStyledBareLegacy {
+    id: u32,
+}
+
+#[derive(Serialize, SpytialDecorators)]
+#[edge_style(field = "right", show_label = false)]
+struct EdgeStyledFlagsOnlyLegacy {
+    id: u32,
+}
+
+#[test]
+fn bare_edge_style_keeps_legacy_blue_default() {
+    // 0.1's flat parser defaulted `value` to "blue", so a styleless
+    // #[edge_style] (no legacy keys, no blocks) must keep drawing a blue
+    // line after the 3.x migration. Writing a block opts out of the default.
+    for (decorators, field) in [
+        (EdgeStyledBareLegacy::decorators(), "left"),
+        (EdgeStyledFlagsOnlyLegacy::decorators(), "right"),
+    ] {
+        let edge = decorators
+            .directives
+            .iter()
+            .find_map(|d| match d {
+                Directive::EdgeStyle(e) => Some(&e.edge_style),
+                _ => None,
+            })
+            .expect("expected an EdgeStyle directive");
+        assert_eq!(edge.field, field);
+        let line = edge
+            .line_style
+            .as_ref()
+            .expect("styleless legacy form defaults a lineStyle block");
+        assert_eq!(line.color.as_deref(), Some("blue"));
+        assert!(line.pattern.is_none());
+    }
+
+    // The flags-only form still carries its flag alongside the default.
+    let flags_only = EdgeStyledFlagsOnlyLegacy::decorators();
+    let yaml = to_yaml(&flags_only).unwrap();
+    assert!(yaml.contains("color: blue"));
+    assert!(yaml.contains("showLabel: false"));
 }
 
 #[derive(Serialize, SpytialDecorators)]
 #[edge_style(
     field = "right",
-    value = "blue",
-    style = "dashed",
-    weight = 2.5,
+    line_style(color = "blue", pattern = "dashed", weight = 2.5),
+    text_style(size = "small", color = "gray"),
     show_label = false,
     hidden = true,
     filter = "Node3 -> Node1",
@@ -142,21 +194,196 @@ fn edge_style_directive_all_options() {
         .expect("expected an EdgeStyle directive");
 
     assert_eq!(edge.field, "right");
-    assert_eq!(edge.value, "blue");
-    assert_eq!(edge.style.as_deref(), Some("dashed"));
-    assert_eq!(edge.weight, Some(2.5));
+    let line = edge
+        .line_style
+        .as_ref()
+        .expect("expected a lineStyle block");
+    assert_eq!(line.color.as_deref(), Some("blue"));
+    assert_eq!(
+        line.pattern,
+        Some(spytial::spytial_annotations::LinePattern::Dashed)
+    );
+    assert_eq!(line.weight, Some(2.5));
+    let text = edge
+        .text_style
+        .as_ref()
+        .expect("expected a textStyle block");
+    assert_eq!(
+        text.size,
+        Some(spytial::spytial_annotations::TextSize::Small)
+    );
+    assert_eq!(text.color.as_deref(), Some("gray"));
     assert_eq!(edge.show_label, Some(false));
     assert_eq!(edge.hidden, Some(true));
     assert_eq!(edge.filter.as_deref(), Some("Node3 -> Node1"));
     assert_eq!(edge.selector.as_deref(), Some("Tree"));
 
     let yaml = to_yaml(&decorators).unwrap();
-    assert!(yaml.contains("edgeColor:"));
-    assert!(yaml.contains("style: dashed"));
+    assert!(yaml.contains("edgeStyle:"));
+    assert!(yaml.contains("lineStyle:"));
+    assert!(yaml.contains("pattern: dashed"));
     assert!(yaml.contains("weight: 2.5"));
+    assert!(yaml.contains("textStyle:"));
+    assert!(yaml.contains("size: small"));
     assert!(yaml.contains("showLabel: false"));
     assert!(yaml.contains("hidden: true"));
     assert!(yaml.contains("filter: Node3"));
+}
+
+#[derive(Serialize, SpytialDecorators)]
+#[edge_style(
+    field = "legacy_edge",
+    value = "seagreen",
+    style = "Dotted",
+    weight = 3.0
+)]
+struct EdgeStyledLegacyFlat {
+    id: u32,
+}
+
+#[test]
+fn edge_style_legacy_flat_keys_desugar_to_blocks() {
+    // The 2.x flat keys keep working and rewrite onto the 3.x blocks:
+    // value -> lineStyle.color, style -> lineStyle.pattern (normalized like
+    // spytial-core: trimmed + lowercased), weight -> lineStyle.weight.
+    let decorators = EdgeStyledLegacyFlat::decorators();
+    let yaml = to_yaml(&decorators).unwrap();
+    assert!(yaml.contains("edgeStyle:"));
+    assert!(!yaml.contains("edgeColor:"));
+    assert!(yaml.contains("lineStyle:"));
+    assert!(yaml.contains("color: seagreen"));
+    assert!(yaml.contains("pattern: dotted"));
+    assert!(yaml.contains("weight: 3.0"));
+    assert!(!yaml.contains("value:"));
+}
+
+#[derive(Serialize, SpytialDecorators)]
+#[atom_style(
+    selector = "Node",
+    border_style(color = "steelblue", width = 2.0),
+    fill_style(color = "#eef6ff"),
+    text_style(size = "large")
+)]
+struct AtomStyled {
+    id: u32,
+}
+
+#[test]
+fn atom_style_directive_blocks() {
+    let decorators = AtomStyled::decorators();
+    let yaml = to_yaml(&decorators).unwrap();
+    assert!(yaml.contains("atomStyle:"));
+    assert!(yaml.contains("selector: Node"));
+    assert!(yaml.contains("borderStyle:"));
+    assert!(yaml.contains("color: steelblue"));
+    assert!(yaml.contains("width: 2.0"));
+    assert!(yaml.contains("fillStyle:"));
+    assert!(yaml.contains("textStyle:"));
+    assert!(yaml.contains("size: large"));
+}
+
+#[derive(Serialize, SpytialDecorators)]
+#[atom_color(selector = "Legacy", value = "crimson")]
+struct AtomColorLegacy {
+    id: u32,
+}
+
+#[test]
+fn atom_color_desugars_to_border_style() {
+    // Legacy atomColor colored the atom's border; the rewrite must preserve
+    // that look (border, NOT fill).
+    let decorators = AtomColorLegacy::decorators();
+    let yaml = to_yaml(&decorators).unwrap();
+    assert!(yaml.contains("atomStyle:"));
+    assert!(!yaml.contains("atomColor:"));
+    assert!(yaml.contains("borderStyle:"));
+    assert!(yaml.contains("color: crimson"));
+    assert!(!yaml.contains("fillStyle:"));
+}
+
+#[derive(Serialize, SpytialDecorators)]
+#[inferred_edge(
+    name = "ancestor",
+    selector = "^parent",
+    line_style(color = "gray", pattern = "dotted")
+)]
+struct InferredEdgeStyled {
+    id: u32,
+}
+
+#[test]
+fn inferred_edge_line_style_block() {
+    let decorators = InferredEdgeStyled::decorators();
+    let yaml = to_yaml(&decorators).unwrap();
+    assert!(yaml.contains("inferredEdge:"));
+    assert!(yaml.contains("name: ancestor"));
+    assert!(yaml.contains("lineStyle:"));
+    assert!(yaml.contains("pattern: dotted"));
+}
+
+#[derive(Serialize, SpytialDecorators)]
+#[attribute(field = "weight", text_style(size = "small"))]
+#[tag(
+    to_tag = "Person",
+    name = "age",
+    value = "Person.age",
+    text_style(color = "gray")
+)]
+struct TextStyledLines {
+    weight: u32,
+}
+
+#[test]
+fn attribute_and_tag_text_style() {
+    // spytial-core 3.1: attribute/tag lines take the shared textStyle block.
+    let decorators = TextStyledLines::decorators();
+    let yaml = to_yaml(&decorators).unwrap();
+    assert!(yaml.contains("attribute:"));
+    assert!(yaml.contains("size: small"));
+    assert!(yaml.contains("tag:"));
+    assert!(yaml.contains("color: gray"));
+    assert!(!yaml.contains("textSize:"));
+}
+
+#[derive(Serialize, SpytialDecorators)]
+#[group(
+    selector = "Team.members",
+    name = "Team",
+    add_edge(
+        points = "togroup",
+        line_style(pattern = "dashed"),
+        text_style(size = "small")
+    ),
+    text_style(color = "navy")
+)]
+struct GroupStyled {
+    id: u32,
+}
+
+#[test]
+fn group_add_edge_block_and_label_style() {
+    let decorators = GroupStyled::decorators();
+    let yaml = to_yaml(&decorators).unwrap();
+    assert!(yaml.contains("group:"));
+    assert!(yaml.contains("addEdge:"));
+    assert!(yaml.contains("points: togroup"));
+    assert!(yaml.contains("pattern: dashed"));
+    // The group's own label styling is a sibling of addEdge.
+    assert!(yaml.contains("color: navy"));
+}
+
+#[derive(Serialize, SpytialDecorators)]
+#[group(selector = "Herd.animals", name = "Herd", add_edge = "fromgroup")]
+struct GroupBareAddEdge {
+    id: u32,
+}
+
+#[test]
+fn group_add_edge_bare_direction() {
+    let decorators = GroupBareAddEdge::decorators();
+    let yaml = to_yaml(&decorators).unwrap();
+    assert!(yaml.contains("addEdge: fromgroup"));
+    assert!(!yaml.contains("points:"));
 }
 
 #[test]

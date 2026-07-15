@@ -14,8 +14,14 @@ struct RBTree {
 #[orientation(selector="{x, y : RBNode | x->y in left}", directions=["left", "below"])]
 #[orientation(selector="{x, y : RBNode | x->y in right}", directions=["right", "below"])]
 #[hide_atom(selector = "Color + u32 + None")]
-#[atom_color(selector = "{x : RBNode | @:(x.color) = Red}", value = "red")]
-#[atom_color(selector = "{x : RBNode | @:(x.color) = Black}", value = "black")]
+#[atom_style(
+    selector = "{x : RBNode | @:(x.color) = Red}",
+    border_style(color = "red")
+)]
+#[atom_style(
+    selector = "{x : RBNode | @:(x.color) = Black}",
+    border_style(color = "black")
+)]
 struct RBNode {
     key: u32,
     color: Color,

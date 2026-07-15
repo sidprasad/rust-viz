@@ -61,13 +61,13 @@ pub enum Constraint {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum Directive {
-    /// Set atom fill colour.
-    AtomColor(AtomColorDirective),
+    /// Style atoms (border, fill, label).
+    AtomStyle(AtomStyleDirective),
     /// Set explicit atom dimensions.
     Size(SizeDirective),
     /// Render atoms as an image icon.
     Icon(IconDirective),
-    /// Style edges (colour, line style, weight, visibility, label).
+    /// Style edges (line, label, visibility).
     EdgeStyle(EdgeStyleDirective),
     /// Project atoms of a given signature out of the main view.
     Projection(ProjectionDirective),
@@ -206,6 +206,15 @@ pub enum GroupParams {
         selector: String,
         /// Group name shown on the diagram.
         name: String,
+        /// Connector between the group's key and the group: a bare direction
+        /// (`none`/`togroup`/`fromgroup`) or a styled [`GroupEdge`] block
+        /// (spytial-core 3.0).
+        #[serde(rename = "addEdge", default, skip_serializing_if = "Option::is_none")]
+        add_edge: Option<GroupEdgeValue>,
+        /// Styling for the group's own label (spytial-core 3.0; `color` only —
+        /// group labels auto-fit their box, so `size` is reserved).
+        #[serde(rename = "textStyle", default, skip_serializing_if = "Option::is_none")]
+        text_style: Option<TextStyle>,
         /// When `true`, serialized as `hold: never`.
         #[serde(
             rename = "hold",
@@ -218,23 +227,178 @@ pub enum GroupParams {
     },
 }
 
-// Directive implementations
+// Style blocks (spytial-core 3.x style system)
+//
+// spytial-core 3.0 combined the flat edge/atom styling directives into
+// `edgeStyle` / `atomStyle` with nested style blocks, shared by
+// `inferredEdge`, `attribute`, `tag` (3.1), and a selector-group's `addEdge`
+// connector. The types below are the Rust vocabulary for those YAML blocks;
+// enums make the closed vocabularies (pattern, size, points) compile-time
+// checked, which matters because spytial-core silently drops invalid leaves.
 
-/// Wire-format wrapper for an `atomColor:` directive.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AtomColorDirective {
-    /// Inner atom-color parameters (selector, colour value).
-    #[serde(rename = "atomColor")]
-    pub atom_color: AtomColorParams,
+/// Line dash pattern of a drawn edge (`lineStyle.pattern`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum LinePattern {
+    /// A solid line (the default look).
+    Solid,
+    /// A dashed line.
+    Dashed,
+    /// A dotted line.
+    Dotted,
 }
 
-/// Parameters of an [`AtomColorDirective`].
+/// Text-size tier of a label (`textStyle.size`), relative to the node label.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TextSize {
+    /// Smaller than the node label.
+    Small,
+    /// Same size as the node label (the default).
+    Normal,
+    /// Larger than the node label.
+    Large,
+}
+
+/// Direction of the connector between a selector-group's key and the group
+/// (`addEdge` / `addEdge.points`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum GroupEdgePoints {
+    /// Draw no connector (the default).
+    None,
+    /// Edge from the key into the group.
+    Togroup,
+    /// Edge from the group back to the key.
+    Fromgroup,
+}
+
+/// Sparse styling of an edge's drawn line (`lineStyle` block).
+///
+/// Every field is optional — set only what you mean; absent leaves fall back
+/// to the default look. `weight` must be greater than 0 (spytial-core drops
+/// non-positive weights).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct LineStyle {
+    /// Line colour (any CSS colour string).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// Dash pattern.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<LinePattern>,
+    /// Line thickness (> 0).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub weight: Option<f64>,
+    /// Halo/highlight colour drawn behind the line.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub highlight: Option<String>,
+}
+
+/// Sparse styling of a label (`textStyle` block) — edge labels, atom labels,
+/// attribute/tag lines, group labels.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct TextStyle {
+    /// Font-size tier relative to the node label.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<TextSize>,
+    /// Text colour (any CSS colour string).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+}
+
+/// Sparse styling of an atom's border (`borderStyle` block).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct BorderStyle {
+    /// Border colour (any CSS colour string).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// Border width (> 0).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<f64>,
+}
+
+/// Sparse styling of an atom's interior fill (`fillStyle` block).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct FillStyle {
+    /// Fill colour (any CSS colour string).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+}
+
+/// Block form of a selector-group's `addEdge`: the connector's direction
+/// (`points` — the same key the YAML uses) plus its line and label styling.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AtomColorParams {
-    /// Selector identifying the atoms to recolour.
-    pub selector: String,
-    /// CSS-style colour value (e.g. `"red"`, `"#ff0000"`).
-    pub value: String,
+pub struct GroupEdge {
+    /// Which way the connector points.
+    pub points: GroupEdgePoints,
+    /// Styling for the connector's drawn line.
+    #[serde(rename = "lineStyle", skip_serializing_if = "Option::is_none")]
+    pub line_style: Option<LineStyle>,
+    /// Styling for the connector's label.
+    #[serde(rename = "textStyle", skip_serializing_if = "Option::is_none")]
+    pub text_style: Option<TextStyle>,
+}
+
+/// A selector-group's `addEdge` value: either the bare direction string or
+/// the styled block form.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum GroupEdgeValue {
+    /// Bare direction form: `addEdge: togroup`.
+    Direction(GroupEdgePoints),
+    /// Block form: `addEdge: {points: ..., lineStyle: ..., textStyle: ...}`.
+    Block(GroupEdge),
+}
+
+/// Normalize a legacy `style` string into a [`LinePattern`], the way
+/// spytial-core's `normalizeEdgeStyle` does: trim + lowercase, and drop (with
+/// a note on stderr) anything outside the solid/dashed/dotted vocabulary —
+/// a 2.x-era spec that rendered must keep rendering, not start failing.
+pub(crate) fn normalize_legacy_pattern(style: &str) -> Option<LinePattern> {
+    match style.trim().to_ascii_lowercase().as_str() {
+        "solid" => Some(LinePattern::Solid),
+        "dashed" => Some(LinePattern::Dashed),
+        "dotted" => Some(LinePattern::Dotted),
+        _ => {
+            eprintln!(
+                "spytial: ignoring invalid edge style {style:?} (expected solid/dashed/dotted); the edge falls back to the default pattern"
+            );
+            None
+        }
+    }
+}
+
+// Directive implementations
+
+/// Wire-format wrapper for an `atomStyle:` directive (spytial-core 3.0).
+///
+/// Styles an atom's border, interior fill, and label independently. The
+/// legacy `atomColor` authoring forms desugar onto this type with the legacy
+/// `value` as the *border* colour (that is what 2.x `atomColor` drew).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AtomStyleDirective {
+    /// Inner atom-style parameters.
+    #[serde(rename = "atomStyle")]
+    pub atom_style: AtomStyleParams,
+}
+
+/// Parameters of an [`AtomStyleDirective`]. All fields optional: an absent
+/// `selector` matches every atom; absent blocks leave that aspect at the
+/// default look.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct AtomStyleParams {
+    /// Selector identifying the atoms to style (absent = all atoms).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selector: Option<String>,
+    /// Interior fill styling.
+    #[serde(rename = "fillStyle", skip_serializing_if = "Option::is_none")]
+    pub fill_style: Option<FillStyle>,
+    /// Border styling.
+    #[serde(rename = "borderStyle", skip_serializing_if = "Option::is_none")]
+    pub border_style: Option<BorderStyle>,
+    /// Label styling.
+    #[serde(rename = "textStyle", skip_serializing_if = "Option::is_none")]
+    pub text_style: Option<TextStyle>,
 }
 
 /// Wire-format wrapper for a `size:` directive.
@@ -274,18 +438,18 @@ pub struct IconParams {
     pub show_labels: bool,
 }
 
-/// `EdgeStyleDirective` is the canonical edge-styling directive — color,
-/// line style, weight, label visibility, and edge visibility in one
-/// directive. Mirrors `EdgeStyleDirective` in `spytial-core`'s
-/// `src/layout/layoutspec.ts`.
+/// `EdgeStyleDirective` is the canonical edge-styling directive (spytial-core
+/// 3.0): the drawn line (`lineStyle`), the edge's label (`textStyle`), and
+/// the showLabel/hidden behaviour flags. Mirrors `EdgeStyleRule` in
+/// `spytial-core`'s `src/layout/style/edge-style-spec.ts`.
 ///
-/// The wire-format YAML key is `edgeColor:` (kept for backwards
-/// compatibility with `spytial-core`'s parser, where `EdgeColorDirective`
-/// is a type alias for `EdgeStyleDirective`).
+/// The legacy flat `edgeColor` authoring forms (`value`/`style`/`weight`)
+/// desugar onto this type: `value` -> `lineStyle.color`, `style` ->
+/// `lineStyle.pattern`, `weight` -> `lineStyle.weight`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EdgeStyleDirective {
     /// Inner edge-style parameters.
-    #[serde(rename = "edgeColor")]
+    #[serde(rename = "edgeStyle")]
     pub edge_style: EdgeStyleParams,
 }
 
@@ -294,20 +458,18 @@ pub struct EdgeStyleDirective {
 pub struct EdgeStyleParams {
     /// Relation/field name whose edges this directive styles.
     pub field: String,
-    /// Edge colour (CSS-style value).
-    pub value: String,
     /// Optional selector restricting which edges are styled.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selector: Option<String>,
     /// Optional value filter restricting which edges are styled.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filter: Option<String>,
-    /// Optional line style (e.g. `"solid"`, `"dashed"`, `"dotted"`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub style: Option<String>,
-    /// Optional line weight (thickness).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub weight: Option<f64>,
+    /// Styling for the drawn line (colour, pattern, weight, highlight).
+    #[serde(rename = "lineStyle", skip_serializing_if = "Option::is_none")]
+    pub line_style: Option<LineStyle>,
+    /// Styling for the edge's label.
+    #[serde(rename = "textStyle", skip_serializing_if = "Option::is_none")]
+    pub text_style: Option<TextStyle>,
     /// Whether to render the edge label.
     #[serde(skip_serializing_if = "Option::is_none", rename = "showLabel")]
     pub show_label: Option<bool>,
@@ -345,6 +507,9 @@ pub struct AttributeParams {
     /// Optional selector restricting where the attribute is shown.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selector: Option<String>,
+    /// Styling for this attribute's line on the node (spytial-core 3.1).
+    #[serde(rename = "textStyle", skip_serializing_if = "Option::is_none")]
+    pub text_style: Option<TextStyle>,
 }
 
 /// Wire-format wrapper for a `hideField:` directive.
@@ -395,6 +560,12 @@ pub struct InferredEdgeParams {
     pub name: String,
     /// Selector defining which atom pairs are connected.
     pub selector: String,
+    /// Styling for the synthesized edge's drawn line (spytial-core 3.0).
+    #[serde(rename = "lineStyle", skip_serializing_if = "Option::is_none")]
+    pub line_style: Option<LineStyle>,
+    /// Styling for the synthesized edge's label.
+    #[serde(rename = "textStyle", skip_serializing_if = "Option::is_none")]
+    pub text_style: Option<TextStyle>,
 }
 
 /// `TagDirective` adds computed attributes to nodes based on n-ary selector
@@ -424,6 +595,9 @@ pub struct TagParams {
     pub name: String,
     /// Expression (n-ary selector) evaluated to produce the attribute value.
     pub value: String,
+    /// Styling for this tag's line on the node (spytial-core 3.1).
+    #[serde(rename = "textStyle", skip_serializing_if = "Option::is_none")]
+    pub text_style: Option<TextStyle>,
 }
 
 /// A boolean diagram flag (e.g. `hideDisconnected`, `hideEmptyRelations`).
@@ -615,27 +789,67 @@ impl SpytialDecoratorsBuilder {
 
     /// Push a selector-based [`GroupConstraint`] (clusters atoms under a
     /// single named group) onto the builder.
-    pub fn group_selector_based(mut self, selector: &str, name: &str, negated: bool) -> Self {
+    pub fn group_selector_based(self, selector: &str, name: &str, negated: bool) -> Self {
+        self.group_selector_based_styled(selector, name, None, None, negated)
+    }
+
+    /// Push a selector-based [`GroupConstraint`] with connector and label
+    /// styling (spytial-core 3.0) onto the builder.
+    pub fn group_selector_based_styled(
+        mut self,
+        selector: &str,
+        name: &str,
+        add_edge: Option<GroupEdgeValue>,
+        text_style: Option<TextStyle>,
+        negated: bool,
+    ) -> Self {
         self.constraints.push(Constraint::Group(GroupConstraint {
             group: GroupParams::SelectorBased {
                 selector: selector.to_string(),
                 name: name.to_string(),
+                add_edge,
+                text_style,
                 negated,
             },
         }));
         self
     }
 
-    /// Push an [`AtomColorDirective`] onto the builder.
-    pub fn atom_color(mut self, selector: &str, value: &str) -> Self {
+    /// Push an [`AtomStyleDirective`] onto the builder (spytial-core 3.0).
+    pub fn atom_style(
+        mut self,
+        selector: Option<&str>,
+        fill_style: Option<FillStyle>,
+        border_style: Option<BorderStyle>,
+        text_style: Option<TextStyle>,
+    ) -> Self {
         self.directives
-            .push(Directive::AtomColor(AtomColorDirective {
-                atom_color: AtomColorParams {
-                    selector: selector.to_string(),
-                    value: value.to_string(),
+            .push(Directive::AtomStyle(AtomStyleDirective {
+                atom_style: AtomStyleParams {
+                    selector: selector.map(|s| s.to_string()),
+                    fill_style,
+                    border_style,
+                    text_style,
                 },
             }));
         self
+    }
+
+    /// Push the legacy flat `atomColor` form onto the builder.
+    ///
+    /// Rewrites to an [`AtomStyleDirective`] with `value` as the *border*
+    /// colour — that is what the 2.x directive drew, so existing specs keep
+    /// their look. Prefer [`Self::atom_style`].
+    pub fn atom_color(self, selector: &str, value: &str) -> Self {
+        self.atom_style(
+            Some(selector),
+            None,
+            Some(BorderStyle {
+                color: Some(value.to_string()),
+                width: None,
+            }),
+            None,
+        )
     }
 
     /// Push a [`SizeDirective`] onto the builder.
@@ -662,10 +876,43 @@ impl SpytialDecoratorsBuilder {
         self
     }
 
-    /// Push an [`EdgeStyleDirective`] onto the builder.
+    /// Push an [`EdgeStyleDirective`] onto the builder (spytial-core 3.0).
     #[allow(clippy::too_many_arguments)]
     pub fn edge_style(
         mut self,
+        field: &str,
+        selector: Option<&str>,
+        filter: Option<&str>,
+        line_style: Option<LineStyle>,
+        text_style: Option<TextStyle>,
+        show_label: Option<bool>,
+        hidden: Option<bool>,
+    ) -> Self {
+        self.directives
+            .push(Directive::EdgeStyle(EdgeStyleDirective {
+                edge_style: EdgeStyleParams {
+                    field: field.to_string(),
+                    selector: selector.map(|s| s.to_string()),
+                    filter: filter.map(|s| s.to_string()),
+                    line_style,
+                    text_style,
+                    show_label,
+                    hidden,
+                },
+            }));
+        self
+    }
+
+    /// Push the legacy flat `edgeColor` form onto the builder.
+    ///
+    /// Rewrites to an [`EdgeStyleDirective`]: `value` -> `lineStyle.color`,
+    /// `style` -> `lineStyle.pattern` (normalized like spytial-core: trimmed,
+    /// lowercased; an unrecognized pattern is dropped with a note on stderr
+    /// rather than failing, so 2.x-era specs keep rendering), `weight` ->
+    /// `lineStyle.weight` (non-positive dropped). Prefer [`Self::edge_style`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn edge_color(
+        self,
         field: &str,
         value: &str,
         selector: Option<&str>,
@@ -675,20 +922,27 @@ impl SpytialDecoratorsBuilder {
         show_label: Option<bool>,
         hidden: Option<bool>,
     ) -> Self {
-        self.directives
-            .push(Directive::EdgeStyle(EdgeStyleDirective {
-                edge_style: EdgeStyleParams {
-                    field: field.to_string(),
-                    value: value.to_string(),
-                    selector: selector.map(|s| s.to_string()),
-                    filter: filter.map(|s| s.to_string()),
-                    style: style.map(|s| s.to_string()),
-                    weight,
-                    show_label,
-                    hidden,
-                },
-            }));
-        self
+        let line_style = LineStyle {
+            color: Some(value.to_string()),
+            pattern: style.and_then(normalize_legacy_pattern),
+            weight: weight.filter(|w| {
+                let ok = w.is_finite() && *w > 0.0;
+                if !ok {
+                    eprintln!("spytial: ignoring invalid edge weight {w:?}; the edge falls back to the default thickness");
+                }
+                ok
+            }),
+            highlight: None,
+        };
+        self.edge_style(
+            field,
+            selector,
+            filter,
+            Some(line_style),
+            None,
+            show_label,
+            hidden,
+        )
     }
 
     /// Push a [`ProjectionDirective`] onto the builder.
@@ -703,12 +957,24 @@ impl SpytialDecoratorsBuilder {
     }
 
     /// Push an [`AttributeDirective`] onto the builder.
-    pub fn attribute(mut self, field: &str, selector: Option<&str>) -> Self {
+    pub fn attribute(self, field: &str, selector: Option<&str>) -> Self {
+        self.attribute_styled(field, selector, None)
+    }
+
+    /// Push an [`AttributeDirective`] with label styling (spytial-core 3.1)
+    /// onto the builder.
+    pub fn attribute_styled(
+        mut self,
+        field: &str,
+        selector: Option<&str>,
+        text_style: Option<TextStyle>,
+    ) -> Self {
         self.directives
             .push(Directive::Attribute(AttributeDirective {
                 attribute: AttributeParams {
                     field: field.to_string(),
                     selector: selector.map(|s| s.to_string()),
+                    text_style,
                 },
             }));
         self
@@ -737,12 +1003,26 @@ impl SpytialDecoratorsBuilder {
     }
 
     /// Push an [`InferredEdgeDirective`] onto the builder.
-    pub fn inferred_edge(mut self, name: &str, selector: &str) -> Self {
+    pub fn inferred_edge(self, name: &str, selector: &str) -> Self {
+        self.inferred_edge_styled(name, selector, None, None)
+    }
+
+    /// Push an [`InferredEdgeDirective`] with line/label styling
+    /// (spytial-core 3.0) onto the builder.
+    pub fn inferred_edge_styled(
+        mut self,
+        name: &str,
+        selector: &str,
+        line_style: Option<LineStyle>,
+        text_style: Option<TextStyle>,
+    ) -> Self {
         self.directives
             .push(Directive::InferredEdge(InferredEdgeDirective {
                 inferred_edge: InferredEdgeParams {
                     name: name.to_string(),
                     selector: selector.to_string(),
+                    line_style,
+                    text_style,
                 },
             }));
         self
@@ -757,12 +1037,25 @@ impl SpytialDecoratorsBuilder {
     }
 
     /// Push a [`TagDirective`] onto the builder.
-    pub fn tag(mut self, to_tag: &str, name: &str, value: &str) -> Self {
+    pub fn tag(self, to_tag: &str, name: &str, value: &str) -> Self {
+        self.tag_styled(to_tag, name, value, None)
+    }
+
+    /// Push a [`TagDirective`] with label styling (spytial-core 3.1) onto
+    /// the builder.
+    pub fn tag_styled(
+        mut self,
+        to_tag: &str,
+        name: &str,
+        value: &str,
+        text_style: Option<TextStyle>,
+    ) -> Self {
         self.directives.push(Directive::Tag(TagDirective {
             tag: TagParams {
                 to_tag: to_tag.to_string(),
                 name: name.to_string(),
                 value: value.to_string(),
+                text_style,
             },
         }));
         self
