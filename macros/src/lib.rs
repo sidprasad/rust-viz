@@ -118,7 +118,7 @@ fn generate_probe_call(type_name: &str) -> proc_macro2::TokenStream {
 /// - `#[atom_color(selector = "sel", value = "red")]` - Legacy form; rewrites to `atom_style` with `value` as the *border* colour
 /// - `#[size(selector = "sel", height = 20, width = 30)]` - Adds size directive
 /// - `#[icon(selector = "sel", path = "icon.png", show_labels = true)]` - Adds icon directive
-/// - `#[edge_style(field = "field", line_style(color = "blue", pattern = "dashed", weight = 2.0), text_style(size = "small"), show_label = true, hidden = false, filter = "...", selector = "...")]` - Adds edge style directive. The legacy flat keys (`value = "blue", style = "dashed", weight = 2.0`) still parse and rewrite onto the blocks (`value` -> line colour); mixing the two shapes is a compile error
+/// - `#[edge_style(field = "field", line_style(color = "blue", pattern = "dashed", weight = 2.0), text_style(size = "small"), show_label = true, hidden = false, filter = "...", selector = "...")]` - Adds edge style directive. The legacy flat keys (`value = "blue", style = "dashed", weight = 2.0`) still parse and rewrite onto the blocks (`value` -> line colour); mixing the two shapes is a compile error. An attribute with no styling at all (e.g. `#[edge_style(field = "left")]`) keeps the 0.1 default of a blue line — write a block to opt out of the default
 /// - `#[projection(sig = "signature")]` - Adds projection directive
 /// - `#[hide_field(field = "field")]` - Adds hide field directive
 /// - `#[hide_atom(selector = "sel")]` - Adds hide atom directive
@@ -905,7 +905,12 @@ fn parse_edge_style_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, s
             ));
         }
 
-        if has_legacy {
+        // An attribute carrying no styling at all is a 0.1-era flat form: the
+        // old parser defaulted `value` to "blue", so a bare
+        // `#[edge_style(field = "left")]` (or one with only show_label/hidden)
+        // must keep drawing a blue edge. Writing a block is what opts into the
+        // new no-default semantics.
+        if has_legacy || !has_blocks {
             return Ok(Some(SpatialAttribute::EdgeStyleLegacy {
                 field,
                 value: value.unwrap_or_else(|| "blue".to_string()),

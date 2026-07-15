@@ -122,6 +122,51 @@ fn edge_style_directive_minimal() {
 }
 
 #[derive(Serialize, SpytialDecorators)]
+#[edge_style(field = "left")]
+struct EdgeStyledBareLegacy {
+    id: u32,
+}
+
+#[derive(Serialize, SpytialDecorators)]
+#[edge_style(field = "right", show_label = false)]
+struct EdgeStyledFlagsOnlyLegacy {
+    id: u32,
+}
+
+#[test]
+fn bare_edge_style_keeps_legacy_blue_default() {
+    // 0.1's flat parser defaulted `value` to "blue", so a styleless
+    // #[edge_style] (no legacy keys, no blocks) must keep drawing a blue
+    // line after the 3.x migration. Writing a block opts out of the default.
+    for (decorators, field) in [
+        (EdgeStyledBareLegacy::decorators(), "left"),
+        (EdgeStyledFlagsOnlyLegacy::decorators(), "right"),
+    ] {
+        let edge = decorators
+            .directives
+            .iter()
+            .find_map(|d| match d {
+                Directive::EdgeStyle(e) => Some(&e.edge_style),
+                _ => None,
+            })
+            .expect("expected an EdgeStyle directive");
+        assert_eq!(edge.field, field);
+        let line = edge
+            .line_style
+            .as_ref()
+            .expect("styleless legacy form defaults a lineStyle block");
+        assert_eq!(line.color.as_deref(), Some("blue"));
+        assert!(line.pattern.is_none());
+    }
+
+    // The flags-only form still carries its flag alongside the default.
+    let flags_only = EdgeStyledFlagsOnlyLegacy::decorators();
+    let yaml = to_yaml(&flags_only).unwrap();
+    assert!(yaml.contains("color: blue"));
+    assert!(yaml.contains("showLabel: false"));
+}
+
+#[derive(Serialize, SpytialDecorators)]
 #[edge_style(
     field = "right",
     line_style(color = "blue", pattern = "dashed", weight = 2.5),
