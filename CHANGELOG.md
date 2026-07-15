@@ -7,9 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.0] - TBD
+## [0.2.0] - TBD
 
-First public release. Speaks the spytial-core 3.1 directive contract:
+Speaks the spytial-core 3.1 directive contract:
 
 - Vendored spytial-core bumped 2.6.2 -> 3.1.0.
 - Styling uses the 3.x block system, written as nested attribute groups that
@@ -24,8 +24,16 @@ First public release. Speaks the spytial-core 3.1 directive contract:
   `lineStyle{color, pattern, weight}`.
 - Pattern/size/direction typos and non-positive weights are compile errors
   (spytial-core silently drops invalid leaves, so the macro is the gate).
+- **Breaking** (Rust API): `Directive::AtomColor` is replaced by
+  `Directive::AtomStyle`, and `EdgeStyleParams` carries `line_style` /
+  `text_style` blocks instead of the flat `value`/`style`/`weight` fields.
+  The attribute and builder authoring forms remain source-compatible.
 - Note: spytial-core 3.0 raises `StyleCollisionError` when two rules set the
   same style property of the same edge/atom to different values (2.x silently
   kept the first).
+
+## [0.1.0]
+
+First public release.
 
 Note: 0.0.1 was an internal pre-release; not on crates.io.
