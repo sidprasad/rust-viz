@@ -14,6 +14,8 @@ cargo build
 cargo test --lib --tests
 cargo test --doc
 cargo run --example rbt          # add SPYTIAL_NO_OPEN=1 to skip the browser
+
+cargo test --manifest-path eval-corpus/Cargo.toml   # separate workspace
 ```
 
 ## Before opening a PR

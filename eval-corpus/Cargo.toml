@@ -1,3 +1,9 @@
+# Its own workspace root, deliberately: `spytial` must not depend on the corpus
+# in any way, not even as a dev-dependency, so that building or packaging the
+# crate never needs this directory. The arrow points one way only — the corpus
+# depends on `spytial`, and its tests run from here.
+[workspace]
+
 [package]
 name = "spytial-eval-corpus"
 version = "0.0.0"

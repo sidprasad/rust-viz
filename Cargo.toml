@@ -12,8 +12,6 @@ documentation = "https://docs.rs/spytial"
 homepage = "https://github.com/sidprasad/spytial-rust"
 keywords = ["spytial", "visualization", "diagram", "debugging", "graph"]
 categories = ["visualization", "development-tools"]
-# `tests/serde_data_model.rs` is excluded because it depends on the unpublished
-# `spytial-eval-corpus` crate, which is not part of the package.
 exclude = [
     "target/",
     "Dockerfile",
@@ -21,7 +19,6 @@ exclude = [
     ".github/",
     "docs/",
     "eval-corpus/",
-    "tests/serde_data_model.rs",
 ]
 
 [dependencies]
@@ -30,10 +27,3 @@ serde_json = "1.0"
 serde_yaml_ng = "0.10"
 serde-value = "0.7"
 spytial_export_macros = { version = "0.2.0", path = "./macros" }
-
-[dev-dependencies]
-# Dev-only, unpublished, and outside this crate on purpose: the evaluation
-# corpus shared with ../reify-eval/rust.ipynb. Cargo permits this cycle
-# (eval-corpus depends on spytial) because dev-dependencies are not part of
-# the normal build graph.
-spytial-eval-corpus = { path = "./eval-corpus" }

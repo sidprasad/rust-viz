@@ -35,6 +35,10 @@ jobs:
       - name: Run doc tests
         run: cargo test --doc
 
+      # Its own workspace, so the run above does not reach it.
+      - name: Run eval-corpus tests
+        run: cargo test --manifest-path eval-corpus/Cargo.toml
+
   rustfmt:
     name: Rustfmt
     runs-on: ubuntu-latest
@@ -54,3 +58,7 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all -- --check
+
+      # Its own workspace, so the check above does not reach it.
+      - name: Check eval-corpus formatting
+        run: cargo fmt --manifest-path eval-corpus/Cargo.toml --all -- --check
