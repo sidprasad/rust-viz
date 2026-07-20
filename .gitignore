@@ -21,6 +21,7 @@ test_output.html
 Thumbs.db
 
 macros/target/
+eval-corpus/target/
 
 # mdBook build output
 docs/book/

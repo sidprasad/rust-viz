@@ -6,7 +6,7 @@
 //! shape is what spytial-core consumes on the JavaScript side — these structs
 //! are part of the public, stable API.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// A relational instance: the full set of atoms (nodes) and relations (edges)
 /// extracted from a single Rust value.
@@ -32,7 +32,7 @@ use serde::Serialize;
 /// [`export_json_instance`]: crate::export_json_instance
 /// [`from_datum`]: crate::from_datum
 /// [`from_datum_root`]: crate::from_datum_root
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct JsonDataInstance {
     /// All atoms (graph nodes), in serialization order — `atoms[0]` is the root
     /// (see the "Root atom" note on [`JsonDataInstance`]).
@@ -47,7 +47,7 @@ pub struct JsonDataInstance {
 /// tuple, map), and primitive leaves. `id` is unique within the instance,
 /// `type` is the Rust type name (e.g. `"Person"`, `"i32"`, `"sequence"`),
 /// and `label` is the human-readable text shown in the diagram.
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct IAtom {
     /// Unique identifier within the enclosing [`JsonDataInstance`].
     pub id: String,
@@ -59,7 +59,7 @@ pub struct IAtom {
 
 /// A single tuple within a relation: the participating atoms and the type
 /// of each position.
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct ITuple {
     /// Atom IDs in this tuple, in position order.
     pub atoms: Vec<String>,
@@ -72,7 +72,7 @@ pub struct ITuple {
 ///
 /// Examples: a field relation `name(Person, string)`, a sequence relation
 /// `idx(sequence, index, T)`, or a map relation `map_entry(map, K, V)`.
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct IRelation {
     /// Stable identifier for the relation (currently the same as [`Self::name`]).
     pub id: String,

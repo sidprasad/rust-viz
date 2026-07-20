@@ -9,8 +9,9 @@
 //!
 //! # Scope
 //!
-//! Covers the full serde tree model: primitives, `Option`, sequences, tuples,
-//! tuple/newtype/unit structs, maps, structs, and all enum variant shapes. That
+//! Covers the full serde tree model: primitives (including `i128`/`u128`),
+//! byte arrays, `Option`, sequences, tuples, tuple/newtype/unit structs, maps,
+//! structs, and all enum variant shapes. That
 //! is exactly what [`crate::export`] produces, which is acyclic by construction
 //! — arena/index "graphs" round-trip as plain data (a self-loop is the integer
 //! index `Some(0)`, not a pointer). True `Rc<RefCell>` pointer cycles are not
@@ -311,10 +312,9 @@ impl<'i, 'a, 'de> Deserializer<'de> for NodeDeserializer<'i, 'a> {
         visitor.visit_string(a.label.clone())
     }
 
-    fn deserialize_bytes<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, ReifyError> {
-        Err(ReifyError::msg(
-            "bytes are not supported by spytial reify yet",
-        ))
+    fn deserialize_bytes<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, ReifyError> {
+        let a = self.atom()?;
+        visitor.visit_byte_buf(parse_bytes_label(&a.label)?)
     }
 
     fn deserialize_byte_buf<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, ReifyError> {
@@ -607,6 +607,26 @@ impl<'i, 'a, 'de> VariantAccess<'de> for VariantWalker<'i, 'a> {
             pos: 0,
         })
     }
+}
+
+/// Parse the label `export` writes for a byte string: Rust's `{:?}` for a
+/// `&[u8]`, i.e. `[1, 2, 3]` or `[]`.
+fn parse_bytes_label(label: &str) -> Result<Vec<u8>, ReifyError> {
+    let inner = label
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .ok_or_else(|| ReifyError::msg(format!("malformed bytes label '{label}'")))?;
+    if inner.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    inner
+        .split(',')
+        .map(|b| {
+            b.trim()
+                .parse::<u8>()
+                .map_err(|e| ReifyError::msg(format!("bad byte in label '{label}': {e}")))
+        })
+        .collect()
 }
 
 /// Deserializer that yields a fixed string — used for struct field names and
