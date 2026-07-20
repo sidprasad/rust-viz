@@ -272,6 +272,10 @@ impl<'a> Serializer for &'a mut JsonDataSerializer {
         Ok(self.emit_atom("i64", &v.to_string()))
     }
 
+    fn serialize_i128(self, v: i128) -> Result<Self::Ok, Self::Error> {
+        Ok(self.emit_atom("i128", &v.to_string()))
+    }
+
     fn serialize_u8(self, v: u8) -> Result<Self::Ok, Self::Error> {
         Ok(self.emit_atom("u8", &v.to_string()))
     }
@@ -286,6 +290,10 @@ impl<'a> Serializer for &'a mut JsonDataSerializer {
 
     fn serialize_u64(self, v: u64) -> Result<Self::Ok, Self::Error> {
         Ok(self.emit_atom("u64", &v.to_string()))
+    }
+
+    fn serialize_u128(self, v: u128) -> Result<Self::Ok, Self::Error> {
+        Ok(self.emit_atom("u128", &v.to_string()))
     }
 
     fn serialize_f32(self, v: f32) -> Result<Self::Ok, Self::Error> {

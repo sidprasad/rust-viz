@@ -1,0 +1,12 @@
+[package]
+name = "spytial-eval-corpus"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.80"
+description = "Shared value corpus for the cross-language Spytial reify evaluation. Not published."
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+spytial = { path = ".." }
