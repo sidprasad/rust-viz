@@ -1,20 +1,23 @@
 //! CI driver for the shared serde-data-model corpus.
 //!
-//! The corpus itself lives in the unpublished `spytial-eval-corpus` crate
-//! (`./eval-corpus`): all 29 types of the
+//! The corpus itself is this crate's `src/lib.rs`: all 29 types of the
 //! [serde data model](https://serde.rs/data-model.html), concrete values for
 //! each, and the two oracles — **R-eq** (`v == from_datum(export(v))`) and
 //! **R-inspect** (`format!("{:?}", v) == replit(export(v))`). The literate
-//! report at `../reify-eval/rust.ipynb` depends on the very same crate, so this
-//! suite and that report cannot drift apart.
+//! report at `../../reify-eval/rust.ipynb` depends on the very same crate, so
+//! this suite and that report cannot drift apart.
+//!
+//! The suite lives here rather than in `spytial`'s own `tests/` so that
+//! `spytial` needs nothing from this directory to build, test, or package.
 //!
 //! Two tests: [`round_trip`] checks every case, [`coverage_is_total`] checks
 //! that every serde category has one. Run with `--nocapture` to print the
 //! coverage table.
 //!
-//! `tests/reify.rs` covers the same machinery from the other direction — it is
-//! organized by Rust-level shape and pins specific regressions. This corpus is
-//! organized by serde category and is the one that must stay exhaustive.
+//! `spytial`'s `tests/reify.rs` covers the same machinery from the other
+//! direction — it is organized by Rust-level shape and pins specific
+//! regressions. This corpus is organized by serde category and is the one that
+//! must stay exhaustive.
 
 use spytial_eval_corpus::{cases, SERDE_DATA_MODEL};
 

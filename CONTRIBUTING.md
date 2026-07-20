@@ -11,6 +11,13 @@ cargo test --lib --tests
 cargo test --doc
 ```
 
+The serde-data-model corpus in `eval-corpus/` is a separate workspace, so the
+commands above do not reach it. Run its tests directly:
+
+```sh
+cargo test --manifest-path eval-corpus/Cargo.toml
+```
+
 ## Running examples
 
 ```sh
