@@ -1,1 +1,1 @@
-spytial-core 3.1.0
+spytial-core 4.0.0

@@ -1,6 +1,6 @@
 use serde::Serialize;
 use spytial::spytial_annotations::{
-    to_yaml, Constraint, Directive, GroupParams, HasSpytialDecorators,
+    to_yaml, Constraint, Directive, DrawEnd, GroupParams, HasSpytialDecorators, InferredEdgeDraw,
     SpytialDecorators as SpytialDecoratorsType, SpytialDecoratorsBuilder,
 };
 use spytial::SpytialDecorators;
@@ -319,6 +319,92 @@ fn inferred_edge_line_style_block() {
     assert!(yaml.contains("name: ancestor"));
     assert!(yaml.contains("lineStyle:"));
     assert!(yaml.contains("pattern: dotted"));
+    // No `draw` key at all when the attribute doesn't ask for one — an
+    // inferredEdge that omits it runs atom to atom.
+    assert!(!yaml.contains("draw:"));
+}
+
+#[derive(Serialize, SpytialDecorators)]
+#[group(selector = "region", name = "regions")]
+#[inferred_edge(
+    name = "connected",
+    selector = "connected",
+    draw = "regions -> regions"
+)]
+#[inferred_edge(name = "manages", selector = "manages", draw = "_ -> regions")]
+struct InferredEdgeDrawn {
+    id: u32,
+}
+
+#[test]
+fn inferred_edge_draw_serializes_as_the_yaml_scalar() {
+    // spytial-core 3.2: `draw` reinterprets each endpoint onto a group hull.
+    // The wire form is the scalar string spytial-core's parser splits on "->",
+    // not a nested source/target mapping.
+    let decorators = InferredEdgeDrawn::decorators();
+    let yaml = to_yaml(&decorators).unwrap();
+    assert!(yaml.contains("draw: regions -> regions"));
+    assert!(yaml.contains("draw: _ -> regions"));
+    assert!(!yaml.contains("source:"));
+
+    let draws: Vec<_> = decorators
+        .directives
+        .iter()
+        .filter_map(|directive| match directive {
+            Directive::InferredEdge(edge) => Some(edge.inferred_edge.draw.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        draws,
+        vec![
+            Some(InferredEdgeDraw::new(
+                DrawEnd::Group("regions".to_string()),
+                DrawEnd::Group("regions".to_string()),
+            )),
+            Some(InferredEdgeDraw::new(
+                DrawEnd::Atom,
+                DrawEnd::Group("regions".to_string()),
+            )),
+        ]
+    );
+}
+
+#[test]
+fn inferred_edge_draw_round_trips_through_yaml() {
+    let built = SpytialDecoratorsBuilder::new()
+        .inferred_edge_drawn(
+            "connected",
+            "connected",
+            Some(InferredEdgeDraw::new(
+                DrawEnd::Group("regions".to_string()),
+                DrawEnd::Atom,
+            )),
+            None,
+            None,
+        )
+        .build();
+    let yaml = to_yaml(&built).unwrap();
+    assert!(yaml.contains("draw: regions -> _"));
+
+    let parsed: SpytialDecoratorsType = serde_yaml_ng::from_str(&yaml).unwrap();
+    assert_eq!(parsed.directives, built.directives);
+}
+
+#[test]
+fn inferred_edge_draw_rejects_malformed_scalars() {
+    // Deserialization is the only path a `draw` string reaches at runtime —
+    // the attribute form is gated at compile time by the macro instead.
+    for raw in [
+        "directives:\n- inferredEdge:\n    name: e\n    selector: s\n    draw: regions\n",
+        "directives:\n- inferredEdge:\n    name: e\n    selector: s\n    draw: a -> b -> c\n",
+        "directives:\n- inferredEdge:\n    name: e\n    selector: s\n    draw: ' -> regions'\n",
+    ] {
+        assert!(
+            serde_yaml_ng::from_str::<SpytialDecoratorsType>(raw).is_err(),
+            "expected {raw:?} to be rejected"
+        );
+    }
 }
 
 #[derive(Serialize, SpytialDecorators)]

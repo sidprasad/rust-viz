@@ -7,7 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.2.0] - TBD
+## [0.3.0] - TBD
+
+Speaks the spytial-core 4.0 directive contract:
+
+- Vendored spytial-core bumped 3.1.0 -> 4.0.0.
+- New `draw = "<end> -> <end>"` on `#[inferred_edge(...)]` (spytial-core 3.2):
+  each end is `_` (the tuple's own atom) or a `group` constraint's name, in
+  which case that end attaches to the group's hull — group-to-group and
+  node-to-group edges. Malformed forms are compile errors, including the
+  redundant `"_ -> _"` (spytial-core silently drops it). New
+  `InferredEdgeDraw` / `DrawEnd` types and a
+  `SpytialDecoratorsBuilder::inferred_edge_drawn` method; the existing
+  `inferred_edge`/`inferred_edge_styled` methods and the attribute form
+  without `draw` are unchanged.
+- spytial-core 4.0's breaking changes don't reach this crate. They split
+  `SQLEvaluator` and `<spytial-explorer>` out of the CDN main global into
+  `spytial-core-sql.global.js` / `spytial-core-explorer.global.js`; the
+  generated page uses neither, so those scripts are deliberately not vendored
+  and every page gets ~0.3 MB smaller. The APIs the template does call —
+  `JSONDataInstance`, `SGraphQueryEvaluator`, `parseLayoutSpec`,
+  `LayoutInstance`, `<webcola-cnd-graph>` — are all still on the main global,
+  and the React error-modal bundle is unchanged.
+- `spytial-core.css` drops from 42 KB to 15 KB: the removed rules are all
+  spec-editor (`.spytial-ed-*`), which the generated page never renders.
+- `JSONDataInstance` now infers missing relation and tuple type signatures.
+  The exporter has always emitted fully-specified types, so it takes the same
+  untouched fast path as before.
+
+Also in this release (landed after the 0.2.0 tag):
+
+- `i128`/`u128` values now export instead of failing with "i128 is not
+  supported", and `from_datum`/`replit` can read back the `bytes` atoms the
+  exporter was already emitting. Both turn errors into working output; no
+  existing diagram changes.
+- The serde data model — all 29 categories a `Serialize` impl can express — is
+  now covered by a corpus that round-trips 74 values through both `from_datum`
+  and `replit`, so "the whole model survives export" is a checked claim.
+- The eval corpus is its own workspace and no longer a dev-dependency of
+  `spytial`, so it never enters the crate's build graph. Packaged crate
+  contents are unaffected; running it needs its own `cargo test` (see
+  CONTRIBUTING).
+
+## [0.2.0] - 2026-07-15
 
 Speaks the spytial-core 3.1 directive contract:
 
