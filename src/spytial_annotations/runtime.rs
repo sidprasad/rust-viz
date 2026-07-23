@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
 use std::sync::LazyLock;
 use std::sync::Mutex;
@@ -545,6 +545,97 @@ pub struct HideAtomParams {
     pub selector: String,
 }
 
+/// One end of an `inferredEdge`'s `draw` line: what that end of the edge
+/// attaches to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DrawEnd {
+    /// Written `_`: the tuple's own atom — what an edge without `draw` does.
+    Atom,
+    /// A `group` constraint's name: the end attaches to that group's hull.
+    /// A keyed (binary-selector) group constraint builds one group per key and
+    /// this end's atom picks which; a unary one builds a single group and the
+    /// end attaches to it directly.
+    Group(String),
+}
+
+impl DrawEnd {
+    /// The YAML spelling of this end.
+    fn as_yaml(&self) -> &str {
+        match self {
+            DrawEnd::Atom => "_",
+            DrawEnd::Group(name) => name,
+        }
+    }
+}
+
+/// An `inferredEdge`'s optional `draw: <end> -> <end>` line (spytial-core 3.2).
+///
+/// `draw` reinterprets where each end of the edge *attaches*; it never changes
+/// which pairs get edges or which way they point (transpose the selector to
+/// flip one). The left end applies to each tuple's first atom, the right end to
+/// its last. With `draw`, a unary selector is also allowed — the single atom
+/// feeds both ends.
+///
+/// Serializes as the scalar string spytial-core parses, e.g. `_ -> regions`.
+/// Group names are resolved against the spec's `group` constraints when
+/// spytial-core parses the spec, so a name that no constraint defines is caught
+/// there rather than here — decorators compose across types, and no single
+/// attribute site can see the whole spec.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InferredEdgeDraw {
+    /// What the first atom of each tuple attaches to.
+    pub source: DrawEnd,
+    /// What the last atom of each tuple attaches to.
+    pub target: DrawEnd,
+}
+
+impl InferredEdgeDraw {
+    /// Build a `draw` value from its two ends.
+    pub fn new(source: DrawEnd, target: DrawEnd) -> Self {
+        Self { source, target }
+    }
+
+    /// Parse the YAML scalar form, `<end> -> <end>`, each end `_` or a group
+    /// name. Mirrors spytial-core's `parseInferredEdgeDraw`, minus its
+    /// `_ -> _` special case: that round-trips here as an explicit pair of atom
+    /// ends (spytial-core drops it, so it renders as a plain edge either way).
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        let parts: Vec<&str> = raw.split("->").collect();
+        if parts.len() != 2 {
+            return Err(format!(
+                "draw must contain exactly one '->' (e.g. \"regions -> regions\" or \"_ -> regions\"); got {raw:?}"
+            ));
+        }
+        let end = |part: &str| -> Result<DrawEnd, String> {
+            match part.trim() {
+                "" => Err(format!(
+                    "draw has an empty endpoint in {raw:?}; each end must be \"_\" or a group name"
+                )),
+                "_" => Ok(DrawEnd::Atom),
+                name => Ok(DrawEnd::Group(name.to_string())),
+            }
+        };
+        Ok(Self::new(end(parts[0])?, end(parts[1])?))
+    }
+}
+
+impl Serialize for InferredEdgeDraw {
+    fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        ser.serialize_str(&format!(
+            "{} -> {}",
+            self.source.as_yaml(),
+            self.target.as_yaml()
+        ))
+    }
+}
+
+impl<'de> Deserialize<'de> for InferredEdgeDraw {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(d)?;
+        Self::parse(&raw).map_err(serde::de::Error::custom)
+    }
+}
+
 /// Wire-format wrapper for an `inferredEdge:` directive.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InferredEdgeDirective {
@@ -560,6 +651,10 @@ pub struct InferredEdgeParams {
     pub name: String,
     /// Selector defining which atom pairs are connected.
     pub selector: String,
+    /// Where each end of the edge attaches (spytial-core 3.2). Absent means
+    /// both ends attach to the tuple's own atoms.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub draw: Option<InferredEdgeDraw>,
     /// Styling for the synthesized edge's drawn line (spytial-core 3.0).
     #[serde(rename = "lineStyle", skip_serializing_if = "Option::is_none")]
     pub line_style: Option<LineStyle>,
@@ -1010,9 +1105,22 @@ impl SpytialDecoratorsBuilder {
     /// Push an [`InferredEdgeDirective`] with line/label styling
     /// (spytial-core 3.0) onto the builder.
     pub fn inferred_edge_styled(
+        self,
+        name: &str,
+        selector: &str,
+        line_style: Option<LineStyle>,
+        text_style: Option<TextStyle>,
+    ) -> Self {
+        self.inferred_edge_drawn(name, selector, None, line_style, text_style)
+    }
+
+    /// Push an [`InferredEdgeDirective`] with group-hull endpoints
+    /// (spytial-core 3.2) and line/label styling onto the builder.
+    pub fn inferred_edge_drawn(
         mut self,
         name: &str,
         selector: &str,
+        draw: Option<InferredEdgeDraw>,
         line_style: Option<LineStyle>,
         text_style: Option<TextStyle>,
     ) -> Self {
@@ -1021,6 +1129,7 @@ impl SpytialDecoratorsBuilder {
                 inferred_edge: InferredEdgeParams {
                     name: name.to_string(),
                     selector: selector.to_string(),
+                    draw,
                     line_style,
                     text_style,
                 },

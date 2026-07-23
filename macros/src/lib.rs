@@ -122,7 +122,7 @@ fn generate_probe_call(type_name: &str) -> proc_macro2::TokenStream {
 /// - `#[projection(sig = "signature")]` - Adds projection directive
 /// - `#[hide_field(field = "field")]` - Adds hide field directive
 /// - `#[hide_atom(selector = "sel")]` - Adds hide atom directive
-/// - `#[inferred_edge(name = "edge", selector = "sel", line_style(color = "gray", pattern = "dotted"))]` - Adds inferred edge directive (`line_style`/`text_style` optional)
+/// - `#[inferred_edge(name = "edge", selector = "sel", draw = "_ -> regions", line_style(color = "gray", pattern = "dotted"))]` - Adds inferred edge directive (`draw`/`line_style`/`text_style` optional). `draw = "<end> -> <end>"` reinterprets where each end attaches: `_` is the tuple's own atom, a group-constraint name is that group's hull
 /// - `#[tag(to_tag = "sel", name = "attr", value = "n-ary selector", text_style(size = "small"))]` - Adds tag directive (`text_style` optional)
 ///
 /// # Example
@@ -374,13 +374,15 @@ pub fn derive_spytial_decorators(input: TokenStream) -> TokenStream {
             Some(SpatialAttribute::InferredEdge {
                 name,
                 selector,
+                draw,
                 line_style,
                 text_style,
             }) => {
+                let dr = quote_draw(&draw);
                 let ls = quote_line_style(&line_style);
                 let ts = quote_text_style(&text_style);
                 decorator_calls.push(quote! {
-                    .inferred_edge_styled(#name, #selector, #ls, #ts)
+                    .inferred_edge_drawn(#name, #selector, #dr, #ls, #ts)
                 });
             }
             Some(SpatialAttribute::Tag {
@@ -526,6 +528,7 @@ enum SpatialAttribute {
     InferredEdge {
         name: String,
         selector: String,
+        draw: Option<DrawTok>,
         line_style: Option<LineStyleTok>,
         text_style: Option<TextStyleTok>,
     },
@@ -1009,7 +1012,7 @@ fn parse_inferred_edge_args(attr: &Attribute) -> Result<Option<SpatialAttribute>
     validate_known_keys(
         attr,
         "inferred_edge",
-        &["name", "selector", "line_style", "text_style"],
+        &["name", "selector", "draw", "line_style", "text_style"],
     )?;
     if let Ok(meta) = attr.meta.require_list() {
         let tokens = &meta.tokens;
@@ -1024,6 +1027,7 @@ fn parse_inferred_edge_args(attr: &Attribute) -> Result<Option<SpatialAttribute>
         Ok(Some(SpatialAttribute::InferredEdge {
             name,
             selector,
+            draw: parse_draw(attr, &stripped)?,
             line_style: parse_line_style_group(attr, &token_str)?,
             text_style: parse_text_style_group(attr, &token_str)?,
         }))
@@ -1097,6 +1101,14 @@ struct BorderStyleTok {
 #[derive(Debug, Default)]
 struct FillStyleTok {
     color: Option<String>,
+}
+
+/// A parsed `inferred_edge` `draw = "<end> -> <end>"` value. Each end is
+/// `None` (written `_`: the atom itself) or a group-constraint name.
+#[derive(Debug)]
+struct DrawTok {
+    source: Option<String>,
+    target: Option<String>,
 }
 
 #[derive(Debug)]
@@ -1224,6 +1236,49 @@ fn parse_fill_style_group(tokens: &str) -> Option<FillStyleTok> {
     })
 }
 
+/// Parse an `inferred_edge` `draw` value out of the stripped token string.
+///
+/// Rejects at compile time everything spytial-core would reject when it parses
+/// the spec (no `->`, more than one, an empty end) plus the redundant
+/// `_ -> _`, which spytial-core silently drops — so a `draw` that survives the
+/// macro is a `draw` that does something.
+fn parse_draw(attr: &Attribute, stripped: &str) -> Result<Option<DrawTok>, syn::Error> {
+    let Some(raw) = extract_string_from_tokens(stripped, "draw") else {
+        return Ok(None);
+    };
+    let parts: Vec<&str> = raw.split("->").collect();
+    if parts.len() != 2 {
+        return Err(err(
+            attr,
+            format!(
+                "draw must contain exactly one \"->\" (e.g. \"regions -> regions\" or \"_ -> regions\"); got {raw:?}"
+            ),
+        ));
+    }
+    let end = |part: &str| -> Result<Option<String>, syn::Error> {
+        match part.trim() {
+            "" => Err(err(
+                attr,
+                format!(
+                    "draw has an empty endpoint in {raw:?}; each end must be \"_\" or a group name"
+                ),
+            )),
+            "_" => Ok(None),
+            name => Ok(Some(name.to_string())),
+        }
+    };
+    let source = end(parts[0])?;
+    let target = end(parts[1])?;
+    if source.is_none() && target.is_none() {
+        return Err(err(
+            attr,
+            "draw = \"_ -> _\" is the default (both ends on the tuple's own atoms); drop the draw key"
+                .to_string(),
+        ));
+    }
+    Ok(Some(DrawTok { source, target }))
+}
+
 /// Parse an `add_edge` value: either the bare string form (from the stripped
 /// token string) or the styled block form.
 fn parse_add_edge(
@@ -1285,6 +1340,28 @@ fn quote_points(p: &str) -> proc_macro2::TokenStream {
         "togroup" => quote! { spytial::spytial_annotations::GroupEdgePoints::Togroup },
         "fromgroup" => quote! { spytial::spytial_annotations::GroupEdgePoints::Fromgroup },
         _ => quote! { spytial::spytial_annotations::GroupEdgePoints::None },
+    }
+}
+
+fn quote_draw(draw: &Option<DrawTok>) -> proc_macro2::TokenStream {
+    let end = |e: &Option<String>| match e {
+        Some(name) => {
+            quote! { spytial::spytial_annotations::DrawEnd::Group(#name.to_string()) }
+        }
+        None => quote! { spytial::spytial_annotations::DrawEnd::Atom },
+    };
+    match draw {
+        None => quote! { None },
+        Some(d) => {
+            let source = end(&d.source);
+            let target = end(&d.target);
+            quote! {
+                Some(spytial::spytial_annotations::InferredEdgeDraw {
+                    source: #source,
+                    target: #target,
+                })
+            }
+        }
     }
 }
 

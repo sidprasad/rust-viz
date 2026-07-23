@@ -122,9 +122,34 @@ typos and non-positive weights are compile errors.
 | `#[projection(sig = "...")]` | Project atoms of `sig` out of the main view. |
 | `#[hide_field(field = "...")]` | Suppress a relation from the rendering. |
 | `#[hide_atom(selector = "...")]` | Suppress matched atoms entirely. |
-| `#[inferred_edge(name = "...", selector = "...", line_style(...), text_style(...))]` | Define a synthetic edge derivable from the data, optionally styled. |
+| `#[inferred_edge(name = "...", selector = "...", draw = "...", line_style(...), text_style(...))]` | Define a synthetic edge derivable from the data, optionally styled. `draw` attaches its ends to group hulls — see below. |
 | `#[tag(to_tag = "...", name = "...", value = "...", text_style(...))]` | Attach a computed attribute to matched atoms. |
 | `#[attribute(field = "...", text_style(...))]` | (See Display above; `text_style` styles the attribute's line.) |
+
+An `inferred_edge` additionally takes `draw = "<end> -> <end>"`, which decides
+what each end of the edge *attaches* to. Each end is either `_` — the tuple's
+own atom, which is what an edge without `draw` does — or the name of a `group`
+constraint, in which case the end lands on that group's hull:
+
+```rust
+#[group(selector = "region", name = "regions")]
+// One edge per `connected` pair, drawn hull to hull.
+#[inferred_edge(name = "connected", selector = "connected", draw = "regions -> regions")]
+// Each person to the hull of the region-group they manage.
+#[inferred_edge(name = "manages", selector = "manages", draw = "_ -> regions")]
+```
+
+`draw` never decides *which* pairs get edges or which way they point — the
+selector does (transpose it, e.g. `~connected`, to flip one). A keyed group
+constraint builds one group per key and the end's atom picks which; a unary one
+builds a single group the end attaches to directly. With `draw`, the selector
+may also be unary: the single atom feeds both ends.
+
+Malformed `draw` strings are compile errors, including the redundant
+`"_ -> _"` (that's the default — drop the key). The group *name*, though, is
+resolved by spytial-core when it parses the assembled spec: decorators compose
+across types, so no single attribute site can see which `group` constraints
+will end up in the spec.
 
 A selector-based `group` additionally takes `add_edge` — the connector between
 the group's key and the group. Bare form `add_edge = "togroup"` (or
