@@ -61,8 +61,22 @@ in the `left` relation, place `y` to the left of and below `x`."
 field. The pattern matches *any* matching node, not specific instances.
 
 ```rust
-#[atom_style(selector = "{x : RBNode | @:(x.color) = Red}",   border_style(color = "red"))]
-#[atom_style(selector = "{x : RBNode | @:(x.color) = Black}", border_style(color = "black"))]
+#[atom_style(selector = "{x : RBNode | @:(x.color) = \"Red\"}",   border_style(color = "red"))]
+#[atom_style(selector = "{x : RBNode | @:(x.color) = \"Black\"}", border_style(color = "black"))]
+```
+
+`\"Red\"` is a string literal in the query, escaped because the selector is
+itself a Rust string. Quoting matters: a bare name that resolves to nothing
+is the empty relation, so the comparison would just be false and the rule
+would quietly never fire — the diagram still renders, only unstyled. The
+diagram flags this with a `⚠ n selector warnings` bar naming the decorator
+and its selector.
+
+A raw string carries the same query without the backslashes, if you prefer
+to read the selector as the query engine sees it:
+
+```rust
+#[atom_style(selector = r#"{x : RBNode | @:(x.color) = "Red"}"#, border_style(color = "red"))]
 ```
 
 **Stage 5 — hide the scaffolding.** The `Color` enum atoms, the `u32`
@@ -103,8 +117,8 @@ Every decorator is a Rust attribute on a type that derives
 
 ### Styling, filtering, and overrides
 
-Styling follows spytial-core 3.x's block system. Blocks are written as nested
-groups that mirror the YAML 1:1:
+Styling follows spytial-core's block system, introduced in 3.x. Blocks are
+written as nested groups that mirror the YAML 1:1:
 
 - `line_style(color = "...", pattern = "solid" | "dashed" | "dotted", weight = 2.0, highlight = "...")` — a drawn edge line;
 - `text_style(size = "small" | "normal" | "large", color = "...")` — any label;

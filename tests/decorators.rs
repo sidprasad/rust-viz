@@ -283,6 +283,122 @@ fn atom_style_directive_blocks() {
 }
 
 #[derive(Serialize, SpytialDecorators)]
+#[atom_style(
+    selector = "{x : Node | @:(x.color) = \"Red\"}",
+    border_style(color = "red")
+)]
+#[orientation(selector = "{x, y : Node | @:(x.tag) = \"a, b\"}", directions = ["right"])]
+struct QuotedSelector {
+    id: u32,
+}
+
+#[test]
+fn selector_keeps_escaped_string_literals() {
+    // simple-graph-query 3.0 reads a bare name as the empty relation, so string
+    // comparands are quoted — which puts escaped quotes inside the selector.
+    // They must survive extraction intact, including a comma inside the quotes.
+    let decorators = QuotedSelector::decorators();
+
+    assert!(decorators.directives.iter().any(|directive| {
+        matches!(directive, Directive::AtomStyle(style)
+            if style.atom_style.selector.as_deref() == Some("{x : Node | @:(x.color) = \"Red\"}"))
+    }));
+    assert!(decorators.constraints.iter().any(|constraint| {
+        matches!(constraint, Constraint::Orientation(orientation)
+            if orientation.orientation.selector == "{x, y : Node | @:(x.tag) = \"a, b\"}")
+    }));
+
+    let yaml = to_yaml(&decorators).unwrap();
+    let parsed: SpytialDecoratorsType = serde_yaml_ng::from_str(&yaml).unwrap();
+    assert!(parsed.directives.iter().any(|directive| {
+        matches!(directive, Directive::AtomStyle(style)
+            if style.atom_style.selector.as_deref() == Some("{x : Node | @:(x.color) = \"Red\"}"))
+    }));
+}
+
+#[derive(Serialize, SpytialDecorators)]
+#[atom_style(
+    selector = r#"{x : Node | @:(x.color) = "Red"}"#,
+    border_style(color = "red")
+)]
+#[hide_atom(selector = r"Color + u32")]
+#[align(
+    // The body reads like a `direction = "..."` pair, but it is the selector's
+    // content — the real direction is the one outside the literal.
+    selector = r#"{x, y : Node | @:(x.note) = "direction = "}"#,
+    direction = "vertical"
+)]
+struct RawSelector {
+    id: u32,
+}
+
+#[test]
+fn selector_accepts_raw_string_literals() {
+    // A raw string is the natural way to write a selector once the query needs
+    // quotes of its own, so it has to parse as readily as the escaped form.
+    let decorators = RawSelector::decorators();
+
+    let style = decorators
+        .directives
+        .iter()
+        .find_map(|directive| match directive {
+            Directive::AtomStyle(style) => Some(&style.atom_style),
+            _ => None,
+        })
+        .expect("atom_style directive");
+    assert_eq!(
+        style.selector.as_deref(),
+        Some(r#"{x : Node | @:(x.color) = "Red"}"#)
+    );
+    // The selector's own quotes and parens must not swallow the sibling block.
+    assert_eq!(
+        style.border_style.as_ref().and_then(|b| b.color.as_deref()),
+        Some("red")
+    );
+
+    assert!(decorators.directives.iter().any(|directive| {
+        matches!(directive, Directive::HideAtom(hide) if hide.hide_atom.selector == "Color + u32")
+    }));
+    assert!(decorators.constraints.iter().any(|constraint| {
+        matches!(constraint, Constraint::Align(align)
+            if align.align.selector == r#"{x, y : Node | @:(x.note) = "direction = "}"#
+            && align.align.direction == "vertical")
+    }));
+}
+
+#[derive(Serialize, SpytialDecorators)]
+#[atom_style(
+    // Lexical torture, not a real query: an unbalanced paren inside the literal
+    // must not unbalance the scan that finds `border_style`'s group.
+    selector = r#"{x : Node | @:(x.label) = "(("}"#,
+    border_style(color = "blue")
+)]
+struct RawSelectorUnbalancedParen {
+    id: u32,
+}
+
+#[test]
+fn raw_selector_parens_do_not_unbalance_group_scan() {
+    let decorators = RawSelectorUnbalancedParen::decorators();
+    let style = decorators
+        .directives
+        .iter()
+        .find_map(|directive| match directive {
+            Directive::AtomStyle(style) => Some(&style.atom_style),
+            _ => None,
+        })
+        .expect("atom_style directive");
+    assert_eq!(
+        style.selector.as_deref(),
+        Some(r#"{x : Node | @:(x.label) = "(("}"#)
+    );
+    assert_eq!(
+        style.border_style.as_ref().and_then(|b| b.color.as_deref()),
+        Some("blue")
+    );
+}
+
+#[derive(Serialize, SpytialDecorators)]
 #[atom_color(selector = "Legacy", value = "crimson")]
 struct AtomColorLegacy {
     id: u32,

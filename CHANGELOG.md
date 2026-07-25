@@ -11,7 +11,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Speaks the spytial-core 4.0 directive contract:
 
-- Vendored spytial-core bumped 3.1.0 -> 4.0.0.
+- Vendored spytial-core bumped 3.1.0 -> 4.1.0.
+- **Breaking** (selectors): 4.1.0's simple-graph-query 3.0 reads a name that
+  resolves to nothing as the empty relation rather than as a string, so string
+  comparands must be quoted — `@:(x.color) = \"Red\"` inside a Rust selector
+  string, or the raw `r#"@:(x.color) = "Red""#`. An unquoted name doesn't
+  error; the comparison is simply false, so the rule silently stops applying.
+  The bundled example and the decorators doc are migrated. spytial-core
+  surfaces such names as a `⚠ n selector warnings` bar on the diagram (also on
+  `layout.warnings`, and emitted as a `layout-warnings` event).
+- Selector strings may carry quotes either way, escaped or raw: the derive
+  macro reads whole string literals of both shapes rather than stopping at the
+  first `"` it meets. Previously the escaped form was truncated mid-selector
+  and the raw form was dropped entirely, leaving a rule that matched every
+  atom. Attribute keys are now also matched on an identifier boundary and only
+  outside literals, so `key = "..."` text inside a selector is content.
 - New `draw = "<end> -> <end>"` on `#[inferred_edge(...)]` (spytial-core 3.2):
   each end is `_` (the tuple's own atom) or a `group` constraint's name, in
   which case that end attaches to the group's hull — group-to-group and
