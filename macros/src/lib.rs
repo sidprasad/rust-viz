@@ -1469,22 +1469,54 @@ fn quote_add_edge(ae: &Option<AddEdgeTok>) -> proc_macro2::TokenStream {
     }
 }
 
+/// Extract the value of a `key = "..."` pair from a token string.
+///
+/// Both literal shapes work, whatever the spacing around `=`:
+/// `"{x : Node | @:(x.color) = \"Red\"}"` and the raw
+/// `r#"{x : Node | @:(x.color) = "Red"}"#`. simple-graph-query 3.0 wants string
+/// comparands quoted, so selectors carry quotes either escaped or raw.
+///
+/// The whole literal's source text goes to `syn`, which decodes it exactly as
+/// rustc would. `key` matches only on an identifier boundary and only outside
+/// literals, so neither a longer key that ends in `key` nor `key = "..."` text
+/// *inside* a selector can be mistaken for the pair.
 fn extract_string_from_tokens(tokens: &str, key: &str) -> Option<String> {
-    // Try both with and without spaces around =
-    let patterns = [
-        format!("{} = \"", key),
-        format!("{}=\"", key),
-        format!("{} =\"", key),
-        format!("{}= \"", key),
-    ];
-
-    for pattern in &patterns {
-        if let Some(start) = tokens.find(pattern) {
-            let start = start + pattern.len();
-            if let Some(end) = tokens[start..].find('"') {
-                return Some(tokens[start..start + end].to_string());
+    let chars: Vec<char> = tokens.chars().collect();
+    let key_chars: Vec<char> = key.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if let Some(end) = string_literal_end(&chars, i) {
+            i = end;
+            continue;
+        }
+        if chars[i..].starts_with(&key_chars[..])
+            && (i == 0 || !(chars[i - 1].is_alphanumeric() || chars[i - 1] == '_'))
+        {
+            let mut j = i + key_chars.len();
+            // Identifier must end exactly at the key.
+            if j < chars.len() && (chars[j].is_alphanumeric() || chars[j] == '_') {
+                i += 1;
+                continue;
+            }
+            while j < chars.len() && chars[j].is_whitespace() {
+                j += 1;
+            }
+            if chars.get(j) == Some(&'=') {
+                j += 1;
+                while j < chars.len() && chars[j].is_whitespace() {
+                    j += 1;
+                }
+                // A non-literal value (a const, a path) is left for the next
+                // occurrence of the key, if any.
+                if let Some(end) = string_literal_end(&chars, j) {
+                    let literal: String = chars[j..end].iter().collect();
+                    return syn::parse_str::<syn::LitStr>(&literal)
+                        .ok()
+                        .map(|lit| lit.value());
+                }
             }
         }
+        i += 1;
     }
     None
 }
@@ -1528,80 +1560,124 @@ fn extract_float_from_tokens(tokens: &str, key: &str) -> Option<f64> {
     None
 }
 
+/// Length of the string literal starting at `chars[i]`, as an end index — or
+/// `None` if no literal starts there.
+///
+/// Handles both shapes a selector can be written in: `"escaped \"Red\""` and
+/// the raw form `r#"quoted "Red" verbatim"#` (any number of `#`). Every scan
+/// over attribute token text goes through this, so a literal's *body* never
+/// steers a scan — the quotes, parens, and `key = value` text inside a selector
+/// are content, not syntax.
+///
+/// The `r` case needs no identifier-boundary check: a raw string is a single
+/// token, so `r#"` only ever appears glued together, while a bare `r` ident
+/// followed by a string prints with a space between them.
+fn string_literal_end(chars: &[char], i: usize) -> Option<usize> {
+    match chars.get(i)? {
+        '"' => {
+            let mut k = i + 1;
+            let mut escaped = false;
+            while k < chars.len() {
+                match chars[k] {
+                    _ if escaped => escaped = false,
+                    '\\' => escaped = true,
+                    '"' => return Some(k + 1),
+                    _ => {}
+                }
+                k += 1;
+            }
+            None // unterminated
+        }
+        'r' => {
+            let mut k = i + 1;
+            let mut hashes = 0usize;
+            while chars.get(k) == Some(&'#') {
+                hashes += 1;
+                k += 1;
+            }
+            if chars.get(k) != Some(&'"') {
+                return None;
+            }
+            k += 1;
+            // Raw strings have no escapes: the body runs to the first `"`
+            // followed by as many `#` as opened it.
+            while k < chars.len() {
+                if chars[k] == '"'
+                    && chars[k + 1..]
+                        .iter()
+                        .take(hashes)
+                        .filter(|c| **c == '#')
+                        .count()
+                        == hashes
+                {
+                    return Some(k + 1 + hashes);
+                }
+                k += 1;
+            }
+            None // unterminated
+        }
+        _ => None,
+    }
+}
+
 /// Remove the contents of every parenthesized group from a token string,
 /// leaving only the top-level `key = value` pairs (the group keys survive as
 /// `key ()`). Used so flat-key extraction never matches a key *inside* a
 /// style block — e.g. `weight` inside `line_style(weight = 2.0)` must not be
-/// read as a top-level legacy `weight`. Tracks string literals so parens
+/// read as a top-level legacy `weight`. Skips string literals whole, so parens
 /// inside selector strings don't unbalance the scan.
 fn strip_groups(tokens: &str) -> String {
+    let chars: Vec<char> = tokens.chars().collect();
     let mut out = String::with_capacity(tokens.len());
     let mut depth = 0usize;
-    let mut in_string = false;
-    let mut prev_escape = false;
-    for c in tokens.chars() {
-        if in_string {
+    let mut i = 0usize;
+    while i < chars.len() {
+        if let Some(end) = string_literal_end(&chars, i) {
             if depth == 0 {
-                out.push(c);
+                out.extend(&chars[i..end]);
             }
-            if c == '"' && !prev_escape {
-                in_string = false;
-            }
-            prev_escape = c == '\\' && !prev_escape;
+            i = end;
             continue;
         }
-        match c {
-            '"' => {
-                in_string = true;
-                if depth == 0 {
-                    out.push(c);
-                }
-            }
+        match chars[i] {
             '(' => {
                 if depth == 0 {
-                    out.push(c);
+                    out.push('(');
                 }
                 depth += 1;
             }
             ')' => {
                 depth = depth.saturating_sub(1);
                 if depth == 0 {
-                    out.push(c);
+                    out.push(')');
                 }
             }
-            _ => {
+            c => {
                 if depth == 0 {
                     out.push(c);
                 }
             }
         }
+        i += 1;
     }
     out
 }
 
 /// Extract the inner token text of a top-level `key ( ... )` group from a
-/// token string, or `None` if the key has no group at depth 0. Quote-aware
+/// token string, or `None` if the key has no group at depth 0. Literal-aware
 /// and balanced, so nested groups (`add_edge(points = ..., line_style(...))`)
 /// and parens inside selector strings are handled.
 fn extract_group_from_tokens(tokens: &str, key: &str) -> Option<String> {
     let chars: Vec<char> = tokens.chars().collect();
     let key_chars: Vec<char> = key.chars().collect();
     let mut depth = 0usize;
-    let mut in_string = false;
-    let mut prev_escape = false;
     let mut i = 0usize;
     while i < chars.len() {
-        let c = chars[i];
-        if in_string {
-            if c == '"' && !prev_escape {
-                in_string = false;
-            }
-            prev_escape = c == '\\' && !prev_escape;
-            i += 1;
+        if let Some(end) = string_literal_end(&chars, i) {
+            i = end;
             continue;
         }
-        match c {
-            '"' => in_string = true,
+        match chars[i] {
             '(' => depth += 1,
             ')' => depth = depth.saturating_sub(1),
             _ => {
@@ -1623,37 +1699,26 @@ fn extract_group_from_tokens(tokens: &str, key: &str) -> Option<String> {
                         // Collect the balanced group body.
                         let mut body = String::new();
                         let mut inner_depth = 1usize;
-                        let mut inner_in_string = false;
-                        let mut inner_prev_escape = false;
                         let mut k = j + 1;
                         while k < chars.len() {
-                            let ic = chars[k];
-                            if inner_in_string {
-                                if ic == '"' && !inner_prev_escape {
-                                    inner_in_string = false;
-                                }
-                                inner_prev_escape = ic == '\\' && !inner_prev_escape;
-                                body.push(ic);
-                                k += 1;
+                            if let Some(end) = string_literal_end(&chars, k) {
+                                body.extend(&chars[k..end]);
+                                k = end;
                                 continue;
                             }
-                            match ic {
-                                '"' => {
-                                    inner_in_string = true;
-                                    body.push(ic);
-                                }
+                            match chars[k] {
                                 '(' => {
                                     inner_depth += 1;
-                                    body.push(ic);
+                                    body.push('(');
                                 }
                                 ')' => {
                                     inner_depth -= 1;
                                     if inner_depth == 0 {
                                         return Some(body);
                                     }
-                                    body.push(ic);
+                                    body.push(')');
                                 }
-                                _ => body.push(ic),
+                                c => body.push(c),
                             }
                             k += 1;
                         }
