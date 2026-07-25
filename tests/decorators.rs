@@ -398,6 +398,105 @@ fn raw_selector_parens_do_not_unbalance_group_scan() {
     );
 }
 
+// Each selector below contains text that reads like one of the attribute's own
+// keys. A key is only a key outside the literal.
+#[derive(Serialize, SpytialDecorators)]
+#[size(
+    selector = r#"{x : Node | @:(x.label) = "width = 3"}"#,
+    height = 77,
+    width = 88
+)]
+struct KeyTextInSelectorSize {
+    id: u32,
+}
+
+#[derive(Serialize, SpytialDecorators)]
+#[orientation(
+    selector = r#"{x, y : Node | @:(x.note) = "negated = false"}"#,
+    directions = ["right"],
+    negated = true
+)]
+struct KeyTextInSelectorOrientation {
+    id: u32,
+}
+
+#[derive(Serialize, SpytialDecorators)]
+#[group(selector = r#"{x, y : Node | @:(x.note) = "field = id"}"#, name = "g")]
+struct KeyTextInSelectorGroup {
+    id: u32,
+}
+
+#[test]
+fn key_text_inside_a_selector_is_not_a_key() {
+    // A number: the flat scan matched `width = ` inside the literal, failed to
+    // parse `3"}"#`, and silently fell back to the default of 30.
+    let size = KeyTextInSelectorSize::decorators()
+        .directives
+        .iter()
+        .find_map(|directive| match directive {
+            Directive::Size(size) => Some(size.size.clone()),
+            _ => None,
+        })
+        .expect("size directive");
+    assert_eq!(size.height, 77);
+    assert_eq!(size.width, 88);
+
+    // A bool: same shape, and it dropped a `negated = true` that was really set.
+    assert!(KeyTextInSelectorOrientation::decorators()
+        .constraints
+        .iter()
+        .any(|constraint| {
+            matches!(constraint, Constraint::Orientation(orientation)
+                if orientation.orientation.negated)
+        }));
+
+    // The choice between `group`'s two shapes: `field = id` inside the selector
+    // used to route a selector-based group to the field-based branch.
+    let group = KeyTextInSelectorGroup::decorators()
+        .constraints
+        .iter()
+        .find_map(|constraint| match constraint {
+            Constraint::Group(group) => Some(group.group.clone()),
+            _ => None,
+        })
+        .expect("group constraint");
+    assert!(
+        matches!(group, GroupParams::SelectorBased { ref name, .. } if name == "g"),
+        "expected a selector-based group, got {group:?}"
+    );
+}
+
+#[derive(Serialize, SpytialDecorators)]
+#[atom_style(
+    selector = r#"{x : Node |
+    @:(x.note) = "a
+b"}"#,
+    border_style(color = "red")
+)]
+struct MultiLineRawSelector {
+    id: u32,
+}
+
+#[test]
+fn raw_selector_keeps_its_own_whitespace() {
+    // Token text used to be flattened before extraction, which rewrote the
+    // newlines a raw string can legitimately carry — including inside a quoted
+    // comparand, where `"a\nb"` silently became `"a b"`.
+    let decorators = MultiLineRawSelector::decorators();
+    let selector = decorators
+        .directives
+        .iter()
+        .find_map(|directive| match directive {
+            Directive::AtomStyle(style) => style.atom_style.selector.clone(),
+            _ => None,
+        })
+        .expect("atom_style selector");
+    assert_eq!(
+        selector, "{x : Node |\n    @:(x.note) = \"a\nb\"}",
+        "the selector should be exactly what was written"
+    );
+}
+
 #[derive(Serialize, SpytialDecorators)]
 #[atom_color(selector = "Legacy", value = "crimson")]
 struct AtomColorLegacy {

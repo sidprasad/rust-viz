@@ -26,6 +26,18 @@ Speaks the spytial-core 4.0 directive contract:
   and the raw form was dropped entirely, leaving a rule that matched every
   atom. Attribute keys are now also matched on an identifier boundary and only
   outside literals, so `key = "..."` text inside a selector is content.
+- Every attribute key is read by one scan, so numbers, bools, arrays and the
+  `group` shape test agree with strings about what a key is. Text inside a
+  selector that reads like a key used to be taken as one, and the fallback was
+  silent: `#[size(selector = "...width = 3...", width = 88)]` emitted the
+  default width of 30, a real `negated = true` was dropped by a selector
+  mentioning `negated = `, and a selector-based `#[group]` whose selector
+  mentioned `field = ` was rewritten into an entirely different field-based
+  group.
+- A raw-string selector keeps its own whitespace. Token text is no longer
+  flattened before extraction, which had rewritten the newlines a raw string
+  can legitimately carry — including inside a quoted comparand, where
+  `"a\nb"` silently became `"a b"`.
 - New `draw = "<end> -> <end>"` on `#[inferred_edge(...)]` (spytial-core 3.2):
   each end is `_` (the tuple's own atom) or a `group` constraint's name, in
   which case that end attaches to the group's hull — group-to-group and

@@ -638,7 +638,7 @@ fn parse_attribute_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, sy
     // Look for `field = "..."`; fall back to `name` when it's omitted.
     if let Ok(meta) = attr.meta.require_list() {
         let tokens = &meta.tokens;
-        let token_str = normalize_whitespace(&tokens.to_string());
+        let token_str = tokens.to_string();
         let text_style = parse_text_style_group(attr, &token_str)?;
 
         if let Some(field) = extract_string_from_tokens(&strip_groups(&token_str), "field") {
@@ -676,7 +676,7 @@ fn parse_orientation_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, 
     validate_known_keys(attr, "orientation", &["selector", "directions", "negated"])?;
     if let Ok(meta) = attr.meta.require_list() {
         let tokens = &meta.tokens;
-        let token_str = normalize_whitespace(&tokens.to_string());
+        let token_str = tokens.to_string();
 
         let selector =
             extract_string_from_tokens(&token_str, "selector").unwrap_or_else(|| "".to_string());
@@ -713,13 +713,13 @@ fn parse_group_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::E
     )?;
     if let Ok(meta) = attr.meta.require_list() {
         let tokens = &meta.tokens;
-        let token_str = normalize_whitespace(&tokens.to_string());
+        let token_str = tokens.to_string();
         // Flat keys are read from the group-stripped string so nothing inside
         // add_edge(...)/text_style(...) is mistaken for a top-level key.
         let stripped = strip_groups(&token_str);
         let negated = extract_bool_from_tokens(&stripped, "negated").unwrap_or(false);
 
-        if stripped.contains("field =") {
+        if has_key(&stripped, "field") {
             // Field-based grouping
             let field =
                 extract_string_from_tokens(&stripped, "field").unwrap_or_else(|| "id".to_string());
@@ -758,7 +758,7 @@ fn parse_align_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::E
     validate_known_keys(attr, "align", &["selector", "direction", "negated"])?;
     if let Ok(meta) = attr.meta.require_list() {
         let tokens = &meta.tokens;
-        let token_str = normalize_whitespace(&tokens.to_string());
+        let token_str = tokens.to_string();
 
         let selector =
             extract_string_from_tokens(&token_str, "selector").unwrap_or_else(|| "".to_string());
@@ -780,7 +780,7 @@ fn parse_cyclic_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::
     validate_known_keys(attr, "cyclic", &["selector", "direction", "negated"])?;
     if let Ok(meta) = attr.meta.require_list() {
         let tokens = &meta.tokens;
-        let token_str = normalize_whitespace(&tokens.to_string());
+        let token_str = tokens.to_string();
 
         let selector =
             extract_string_from_tokens(&token_str, "selector").unwrap_or_else(|| "".to_string());
@@ -877,7 +877,7 @@ fn parse_edge_style_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, s
     )?;
     if let Ok(meta) = attr.meta.require_list() {
         let tokens = &meta.tokens;
-        let token_str = normalize_whitespace(&tokens.to_string());
+        let token_str = tokens.to_string();
         // Flat keys come from the group-stripped string, so `weight`/`color`
         // inside `line_style(...)` are never read as legacy flat keys.
         let stripped = strip_groups(&token_str);
@@ -948,7 +948,7 @@ fn parse_atom_style_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, s
     )?;
     if let Ok(meta) = attr.meta.require_list() {
         let tokens = &meta.tokens;
-        let token_str = normalize_whitespace(&tokens.to_string());
+        let token_str = tokens.to_string();
         let stripped = strip_groups(&token_str);
 
         Ok(Some(SpatialAttribute::AtomStyle {
@@ -1016,7 +1016,7 @@ fn parse_inferred_edge_args(attr: &Attribute) -> Result<Option<SpatialAttribute>
     )?;
     if let Ok(meta) = attr.meta.require_list() {
         let tokens = &meta.tokens;
-        let token_str = normalize_whitespace(&tokens.to_string());
+        let token_str = tokens.to_string();
         let stripped = strip_groups(&token_str);
 
         let name =
@@ -1040,7 +1040,7 @@ fn parse_tag_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::Err
     validate_known_keys(attr, "tag", &["to_tag", "name", "value", "text_style"])?;
     if let Ok(meta) = attr.meta.require_list() {
         let tokens = &meta.tokens;
-        let token_str = normalize_whitespace(&tokens.to_string());
+        let token_str = tokens.to_string();
         let stripped = strip_groups(&token_str);
 
         let to_tag = extract_string_from_tokens(&stripped, "to_tag").unwrap_or_default();
@@ -1056,13 +1056,6 @@ fn parse_tag_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::Err
     } else {
         Ok(None)
     }
-}
-
-/// Replace newlines/tabs with spaces so the `extract_*_from_tokens` helpers
-/// (which match `key = ` / `key = "`) work even when proc-macro2 wraps long
-/// attribute lists across multiple lines.
-fn normalize_whitespace(tokens: &str) -> String {
-    tokens.replace(['\n', '\r', '\t'], " ")
 }
 
 // ---------------------------------------------------------------------------
@@ -1480,12 +1473,19 @@ fn quote_add_edge(ae: &Option<AddEdgeTok>) -> proc_macro2::TokenStream {
 /// rustc would. `key` matches only on an identifier boundary and only outside
 /// literals, so neither a longer key that ends in `key` nor `key = "..."` text
 /// *inside* a selector can be mistaken for the pair.
-fn extract_string_from_tokens(tokens: &str, key: &str) -> Option<String> {
-    let chars: Vec<char> = tokens.chars().collect();
+/// Where the value of each `key = <value>` pair starts, in order.
+///
+/// Every key extractor scans through this, so they all agree on what counts as
+/// a key: matched on an identifier boundary (`line_style` never answers for
+/// `style`) and only outside string literals, so `width = 3` written *inside* a
+/// selector is that selector's content rather than a `width` of 3. Any spacing
+/// around `=` works, newlines included.
+fn key_value_starts(chars: &[char], key: &str) -> Vec<usize> {
     let key_chars: Vec<char> = key.chars().collect();
+    let mut starts = Vec::new();
     let mut i = 0usize;
     while i < chars.len() {
-        if let Some(end) = string_literal_end(&chars, i) {
+        if let Some(end) = string_literal_end(chars, i) {
             i = end;
             continue;
         }
@@ -1506,58 +1506,72 @@ fn extract_string_from_tokens(tokens: &str, key: &str) -> Option<String> {
                 while j < chars.len() && chars[j].is_whitespace() {
                     j += 1;
                 }
-                // A non-literal value (a const, a path) is left for the next
-                // occurrence of the key, if any.
-                if let Some(end) = string_literal_end(&chars, j) {
-                    let literal: String = chars[j..end].iter().collect();
-                    return syn::parse_str::<syn::LitStr>(&literal)
-                        .ok()
-                        .map(|lit| lit.value());
-                }
+                starts.push(j);
+                i = j;
+                continue;
             }
         }
         i += 1;
     }
-    None
+    starts
+}
+
+/// Whether `key` appears as a key at all — used to pick between an attribute's
+/// two shapes (`group`'s field-based vs selector-based) without a substring
+/// test that a selector could satisfy by accident.
+fn has_key(tokens: &str, key: &str) -> bool {
+    let chars: Vec<char> = tokens.chars().collect();
+    !key_value_starts(&chars, key).is_empty()
+}
+
+/// The bare (unquoted) value token at `start`: everything up to the next
+/// separator or whitespace.
+fn scalar_at(chars: &[char], start: usize) -> String {
+    chars[start..]
+        .iter()
+        .take_while(|c| !(**c == ',' || **c == ')' || c.is_whitespace()))
+        .collect()
+}
+
+/// Extract the value of a `key = "..."` pair from a token string.
+///
+/// Both literal shapes work: `"{x : Node | @:(x.color) = \"Red\"}"` and the raw
+/// `r#"{x : Node | @:(x.color) = "Red"}"#`. simple-graph-query 3.0 wants string
+/// comparands quoted, so selectors carry quotes either escaped or raw.
+///
+/// The whole literal's source text goes to `syn`, which decodes it exactly as
+/// rustc would. A `key` whose value is not a string literal (a const, a path)
+/// is skipped in favour of a later occurrence, if any.
+fn extract_string_from_tokens(tokens: &str, key: &str) -> Option<String> {
+    let chars: Vec<char> = tokens.chars().collect();
+    key_value_starts(&chars, key).into_iter().find_map(|start| {
+        let end = string_literal_end(&chars, start)?;
+        let literal: String = chars[start..end].iter().collect();
+        syn::parse_str::<syn::LitStr>(&literal)
+            .ok()
+            .map(|lit| lit.value())
+    })
 }
 
 fn extract_number_from_tokens(tokens: &str, key: &str) -> Option<u32> {
-    let pattern = format!("{} = ", key);
-    if let Some(start) = tokens.find(&pattern) {
-        let start = start + pattern.len();
-        let rest = &tokens[start..];
-        let end = rest.find([',', ' ', ')']).unwrap_or(rest.len());
-        if let Ok(value) = rest[..end].trim().parse::<u32>() {
-            return Some(value);
-        }
-    }
-    None
+    let chars: Vec<char> = tokens.chars().collect();
+    key_value_starts(&chars, key)
+        .into_iter()
+        .find_map(|start| scalar_at(&chars, start).parse::<u32>().ok())
 }
 
 fn extract_bool_from_tokens(tokens: &str, key: &str) -> Option<bool> {
-    let pattern = format!("{} = ", key);
-    if let Some(start) = tokens.find(&pattern) {
-        let start = start + pattern.len();
-        let rest = &tokens[start..];
-        let end = rest.find([',', ' ', ')']).unwrap_or(rest.len());
-        if let Ok(value) = rest[..end].trim().parse::<bool>() {
-            return Some(value);
-        }
-    }
-    None
+    let chars: Vec<char> = tokens.chars().collect();
+    key_value_starts(&chars, key)
+        .into_iter()
+        .find_map(|start| scalar_at(&chars, start).parse::<bool>().ok())
 }
 
 fn extract_float_from_tokens(tokens: &str, key: &str) -> Option<f64> {
-    let pattern = format!("{} = ", key);
-    if let Some(start) = tokens.find(&pattern) {
-        let start = start + pattern.len();
-        let rest = &tokens[start..];
-        let end = rest.find([',', ' ', ')']).unwrap_or(rest.len());
-        if let Ok(value) = rest[..end].trim().parse::<f64>() {
-            return Some(value);
-        }
-    }
-    None
+    let chars: Vec<char> = tokens.chars().collect();
+    key_value_starts(&chars, key)
+        .into_iter()
+        .find_map(|start| scalar_at(&chars, start).parse::<f64>().ok())
 }
 
 /// Length of the string literal starting at `chars[i]`, as an end index — or
@@ -1732,29 +1746,46 @@ fn extract_group_from_tokens(tokens: &str, key: &str) -> Option<String> {
     None
 }
 
+/// Extract the items of a `key = [...]` array from a token string.
+///
+/// Quoted items are decoded as literals (so `]` or a comma inside one is
+/// content, not a delimiter); bare items are taken as written, which is what
+/// the flat scan used to do for every item.
 fn extract_array_from_tokens(tokens: &str, key: &str) -> Option<Vec<String>> {
-    // Try different patterns since the tokenizer might have different spacing
-    let patterns = [
-        format!("{}=[", key),
-        format!("{} = [", key),
-        format!("{}= [", key),
-        format!("{} =[", key),
-    ];
-
-    for pattern in &patterns {
-        if let Some(start) = tokens.find(pattern) {
-            let start = start + pattern.len();
-            let rest = &tokens[start..];
-            if let Some(end) = rest.find(']') {
-                let array_content = &rest[..end];
-                let items: Vec<String> = array_content
-                    .split(',')
-                    .map(|s| s.trim().trim_matches('"').to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                return Some(items);
-            }
+    let chars: Vec<char> = tokens.chars().collect();
+    key_value_starts(&chars, key).into_iter().find_map(|start| {
+        if chars.get(start) != Some(&'[') {
+            return None;
         }
-    }
-    None
+        let mut items = Vec::new();
+        let mut bare = String::new();
+        let mut i = start + 1;
+        while i < chars.len() && chars[i] != ']' {
+            if let Some(end) = string_literal_end(&chars, i) {
+                let literal: String = chars[i..end].iter().collect();
+                if let Ok(lit) = syn::parse_str::<syn::LitStr>(&literal) {
+                    items.push(lit.value());
+                }
+                i = end;
+                continue;
+            }
+            match chars[i] {
+                ',' => {
+                    if !bare.trim().is_empty() {
+                        items.push(bare.trim().to_string());
+                    }
+                    bare.clear();
+                }
+                c => bare.push(c),
+            }
+            i += 1;
+        }
+        if i >= chars.len() {
+            return None; // unterminated — treat as absent
+        }
+        if !bare.trim().is_empty() {
+            items.push(bare.trim().to_string());
+        }
+        Some(items)
+    })
 }
