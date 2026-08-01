@@ -57,6 +57,24 @@ const BLOCK_SOURCES: &[(&str, &str)] = &[
     ("iconStyle", "icon_style"),
 ];
 
+/// Manifest items the derive macro deliberately does not offer, and why.
+///
+/// Empty today. It exists so that "the macro has no attribute for this" is a
+/// recorded decision rather than an omission — see the coverage check in
+/// [`generate`].
+const UNMAPPED_ITEMS: &[(&str, &str)] = &[];
+
+/// Blocks the manifest describes inside a field's `alternativeForm` rather than
+/// in the top-level `blocks` list.
+///
+/// `group`'s `addEdge` is written either as a bare direction string or as a
+/// block, and the manifest attaches the block's shape to the field. Without
+/// this the block gets no spec, and a typo in `add_edge(pointz = ...)` silently
+/// yields no connector.
+///
+/// (item id, field name, Rust attribute-group name)
+const ALT_FORM_BLOCKS: &[(&str, &str, &str)] = &[("group", "addEdge", "add_edge")];
+
 /// Fields whose Rust spelling is not just the snake_case of the YAML key.
 ///
 /// `hold` is a tri-state string upstream (`always`/`never`/absent) but only
@@ -160,7 +178,17 @@ fn rules_for_fields(item_id: &str, fields: &[Value], out: &mut Vec<Rule>) {
             max: f["maximum"].as_f64(),
             required: f["required"].as_bool().unwrap_or(false),
             enforcement: f["enforcement"].as_str().map(str::to_string),
-            default: f["default"].as_str().map(str::to_string),
+            // Rendered as text whatever its JSON type: six of the manifest's
+            // defaults are booleans or numbers (`showLabel: true`,
+            // `icon.showLabels: false`, `iconStyle.opacity: 1`, …), and reading
+            // only strings dropped every one of them — which is how `#[icon]`
+            // came to default `show_labels` to the opposite of what the engine
+            // assumes. Callers parse the text back to the type they want.
+            default: match &f["default"] {
+                Value::Null => None,
+                Value::String(s) => Some(s.clone()),
+                other => Some(other.to_string()),
+            },
         });
     }
 }
@@ -212,6 +240,38 @@ pub fn generate(manifest_json: &str) -> Result<String, String> {
 
     let find_item =
         |id: &str| -> Option<&Value> { items.iter().find(|i| i["id"].as_str() == Some(id)) };
+
+    // Every item and block the manifest describes must be accounted for. Without
+    // this, a spytial-core release that *adds* a directive re-vendors completely
+    // green: the tables just omit it, and the drift test compares the derive's
+    // attribute list against tables that are themselves fed by these policy
+    // tables, so nothing downstream notices either. Anything deliberately not
+    // exposed belongs in UNMAPPED_ITEMS with a reason, not in silence.
+    for item in items {
+        let id = item["id"].as_str().unwrap_or_default();
+        let mapped = ATTR_SOURCES
+            .iter()
+            .any(|(_, sources)| sources.contains(&id))
+            || UNMAPPED_ITEMS.iter().any(|(unmapped, _)| *unmapped == id);
+        if !mapped {
+            return Err(format!(
+                "manifest item `{id}` is named by neither ATTR_SOURCES nor UNMAPPED_ITEMS in \
+                 spec-codegen/src/lib.rs.\nspytial-core describes a form the derive macro does \
+                 not offer: either map it to an attribute, or list it in UNMAPPED_ITEMS with \
+                 the reason it is deliberately absent."
+            ));
+        }
+    }
+    for block in blocks {
+        let name = block["name"].as_str().unwrap_or_default();
+        if !BLOCK_SOURCES.iter().any(|(yaml, _)| *yaml == name) {
+            return Err(format!(
+                "manifest block `{name}` is not named by BLOCK_SOURCES in \
+                 spec-codegen/src/lib.rs.\nspytial-core describes a style block the derive macro \
+                 does not offer."
+            ));
+        }
+    }
 
     let mut s = String::new();
     s.push_str(&format!(
@@ -411,6 +471,32 @@ pub fn block_spec(block: &str) -> Option<&'static BlockSpec> {{
             rule_lits.join(", "),
         ));
     }
+
+    // Blocks the manifest hangs off a field's `alternativeForm`.
+    for (item_id, field_name, rust_name) in ALT_FORM_BLOCKS {
+        let item = find_item(item_id)
+            .ok_or_else(|| format!("manifest has no item `{item_id}`; the language changed"))?;
+        let alt = item["fields"]
+            .as_array()
+            .and_then(|fs| fs.iter().find(|f| f["name"].as_str() == Some(*field_name)))
+            .map(|f| &f["alternativeForm"])
+            .filter(|a| !a.is_null())
+            .ok_or_else(|| {
+                format!("`{item_id}.{field_name}` has no alternativeForm; the language changed")
+            })?;
+        let mut rules = Vec::new();
+        if let Some(fields) = alt["fields"].as_array() {
+            rules_for_fields(*field_name, fields, &mut rules);
+        }
+        let rule_lits: Vec<String> = rules.iter().map(emit_rule).collect();
+        block_entries.push(format!(
+            "    BlockSpec {{ block: {:?}, yaml_key: {:?}, rules: &[{}] }},",
+            rust_name,
+            field_name,
+            rule_lits.join(", "),
+        ));
+    }
+
     s.push_str("/// Every nested style block the derive macro accepts.\npub static BLOCKS: &[BlockSpec] = &[\n");
     s.push_str(&block_entries.join("\n"));
     s.push_str("\n];\n\n");
@@ -523,6 +609,16 @@ pub fn vendored_manifest() -> std::io::Result<String> {
 /// run to hundreds of lines, and a dump of both copies buries the one line
 /// that moved.
 pub fn first_difference(on_disk: &str, generated: &str) -> Option<String> {
+    // `lines()` drops the distinction, and a file missing its final newline is
+    // a file the generator would rewrite.
+    if on_disk.ends_with('\n') != generated.ends_with('\n') {
+        return Some(if generated.ends_with('\n') {
+            "the checked-in file is missing its final newline".to_string()
+        } else {
+            "the checked-in file has a final newline the generated one does not".to_string()
+        });
+    }
+
     let mut disk_lines = on_disk.lines();
     let mut gen_lines = generated.lines();
     let mut n = 0usize;

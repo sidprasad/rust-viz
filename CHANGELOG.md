@@ -56,6 +56,26 @@ from spytial-core's own language manifest instead of transcribed by hand:
 - `SpytialDecoratorsBuilder` signature changes follow from the above:
   `atom_style` takes `icon_style` and `show_label`, `attribute_styled` and
   `hide_field` take `filter`.
+- **Breaking** (reading, not just writing): removing `Directive::Icon` and
+  `Directive::Projection` also removes the ability to *deserialize* a spec
+  containing `icon:` or `projection:`. `Directive` is `#[serde(untagged)]`, so
+  such a document now fails with `data did not match any variant of untagged
+  enum Directive`, which names no key. `icon:` is deprecated upstream but
+  spytial-core 4.3 still parses it, so a hand-written spec can legitimately
+  contain one. This crate only ever writes decorator sets, so nothing in it is
+  affected; a consumer round-tripping YAML through `SpytialDecorators` is.
+- Legacy `edge_style` flat keys are validated like their block replacements:
+  `style` against solid/dashed/dotted (after the same trim-and-lowercase
+  spytial-core applies, so `"Dotted"` still parses) and `weight` for
+  positivity. Both previously reached the runtime, which dropped them with a
+  note on stderr.
+- `add_edge(...)` is checked like the other blocks. A typo'd leaf
+  (`add_edge(pointz = "togroup")`) silently fell back to `points: none`,
+  drawing no connector at all.
+- `#[icon]`'s `show_labels` defaults to `false`, matching the manifest. It
+  defaulted to `true`, which inverted the whole rewrite for a bare `#[icon]`:
+  a corner badge with the label on, where the engine draws a full-box icon with
+  the label off.
 
 ## [0.3.0] - TBD
 

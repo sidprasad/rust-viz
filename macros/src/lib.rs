@@ -662,6 +662,19 @@ fn check_direction(attr: &Attribute, attr_name: &str, value: &str) -> Result<(),
     check_vocabulary(attr, &format!("#[{attr_name}(...)]"), rule, value)
 }
 
+/// Check one of an attribute's string keys against its generated vocabulary.
+fn check_attr_str(
+    attr: &Attribute,
+    attr_name: &str,
+    key: &str,
+    value: &str,
+) -> Result<(), syn::Error> {
+    let Some(rule) = spec_for(attr_name).rule(key) else {
+        return Ok(());
+    };
+    check_vocabulary(attr, &format!("#[{attr_name}(...)]"), rule, value)
+}
+
 /// Check one of an attribute's numeric keys against its generated bounds.
 fn check_attr_num(
     attr: &Attribute,
@@ -673,6 +686,20 @@ fn check_attr_num(
         return Ok(());
     };
     check_bounds(attr, &format!("#[{attr_name}(...)]"), rule, value)
+}
+
+/// The boolean value spytial-core assumes when a field is absent, per the
+/// manifest. Defaults are carried as text in the tables whatever their JSON
+/// type, so this parses it back.
+fn default_bool(attr_name: &str, key: &str) -> bool {
+    match default_for(attr_name, key) {
+        "true" => true,
+        "false" => false,
+        other => panic!(
+            "#[{attr_name}]'s `{key}` default is {other:?}, not a boolean; \
+             regenerate spec_tables.rs"
+        ),
+    }
 }
 
 /// The value spytial-core assumes when a field is absent, per the manifest.
@@ -1077,7 +1104,12 @@ fn parse_icon_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::Er
             extract_string_from_tokens(&token_str, "selector").unwrap_or_else(|| "".to_string());
         let path = extract_string_from_tokens(&token_str, "path")
             .unwrap_or_else(|| "icon.png".to_string());
-        let show_labels = extract_bool_from_tokens(&token_str, "show_labels").unwrap_or(true);
+        // The manifest's default is `false`, not `true`. Getting this backwards
+        // inverted the whole deprecation rewrite for a bare `#[icon]`: it drew a
+        // corner badge with the label on, where the engine draws a full-box icon
+        // with the label off.
+        let show_labels = extract_bool_from_tokens(&token_str, "show_labels")
+            .unwrap_or_else(|| default_bool("icon", "show_labels"));
 
         Ok(Some(SpatialAttribute::Icon {
             selector,
@@ -1108,10 +1140,30 @@ fn parse_edge_style_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, s
         let line_style = parse_line_style_group(attr, &token_str)?;
         let text_style = parse_text_style_group(attr, &token_str)?;
 
-        // Legacy flat keys (2.x edgeColor shape).
+        // Legacy flat keys (2.x edgeColor shape). They carry the same generated
+        // rules as their block replacements, so check them the same way — a
+        // `style = "dashd"` typo used to reach the runtime, which dropped the
+        // pattern with a note on stderr, while the identical typo written as
+        // `line_style(pattern = "dashd")` was a compile error.
         let value = extract_string_from_tokens(&stripped, "value");
         let style = extract_string_from_tokens(&stripped, "style");
         let weight = extract_float_from_tokens(&stripped, "weight");
+        if let Some(style) = &style {
+            // Checked against the normalized form, because that is what the
+            // legacy path accepts: spytial-core's `normalizeEdgeStyle` trims and
+            // lowercases, so `"Dotted"` is a valid 2.x spelling. The block form
+            // gets no such leniency — `line_style(pattern = ...)` is matched
+            // exactly. Only a value that survives neither, like `"dashd"`, fails.
+            check_attr_str(
+                attr,
+                "edge_style",
+                "style",
+                style.trim().to_ascii_lowercase().as_str(),
+            )?;
+        }
+        if let Some(weight) = weight {
+            check_attr_num(attr, "edge_style", "weight", weight)?;
+        }
 
         let has_legacy = value.is_some() || style.is_some() || weight.is_some();
         let has_blocks = line_style.is_some() || text_style.is_some();
@@ -1362,6 +1414,16 @@ fn check_block_num(
     check_bounds(attr, &format!("{block}(...)"), rule, value)
 }
 
+/// The value spytial-core assumes when a block leaf is absent, per the manifest.
+fn default_for_block(block: &str, leaf: &str) -> &'static str {
+    block_for(block)
+        .rule(leaf)
+        .and_then(|r| r.default)
+        .unwrap_or_else(|| {
+            panic!("{block}(...)'s `{leaf}` has no manifest default; regenerate spec_tables.rs")
+        })
+}
+
 /// Reject any leaf inside a style block that the generated spec doesn't list,
 /// so `line_style(colour = "red")` fails here instead of rendering unstyled.
 fn validate_block_leaves(attr: &Attribute, block: &str, body: &str) -> Result<(), syn::Error> {
@@ -1523,16 +1585,14 @@ fn parse_add_edge(
     tokens: &str,
     stripped: &str,
 ) -> Result<Option<AddEdgeTok>, syn::Error> {
-    // The bare and block forms carry the same closed vocabulary; the manifest
-    // states it once, on `group`'s `addEdge` field.
-    let points_rule = spec_for("group")
-        .rule("add_edge")
-        .expect("group spec has no add_edge rule; regenerate spec_tables.rs");
-
     if let Some(body) = extract_group_from_tokens(tokens, "add_edge") {
-        let points =
-            extract_string_from_tokens(&body, "points").unwrap_or_else(|| "none".to_string());
-        check_vocabulary(attr, "#[group(...)]", points_rule, &points)?;
+        // The block form is a block like any other: reject unknown leaves, or a
+        // typo'd `pointz` silently yields the `none` default, i.e. the connector
+        // the user asked for is never drawn.
+        validate_block_leaves(attr, "add_edge", &body)?;
+        let points = extract_string_from_tokens(&body, "points")
+            .unwrap_or_else(|| default_for_block("add_edge", "points").to_string());
+        check_block_str(attr, "add_edge", "points", &Some(points.clone()))?;
         return Ok(Some(AddEdgeTok::Block {
             points,
             line_style: parse_line_style_group(attr, &body)?,
@@ -1540,7 +1600,9 @@ fn parse_add_edge(
         }));
     }
     if let Some(direction) = extract_string_from_tokens(stripped, "add_edge") {
-        check_vocabulary(attr, "#[group(...)]", points_rule, &direction)?;
+        // The bare form carries the same vocabulary, stated on `group`'s own
+        // `addEdge` field.
+        check_attr_str(attr, "group", "add_edge", &direction)?;
         return Ok(Some(AddEdgeTok::Direction(direction)));
     }
     Ok(None)

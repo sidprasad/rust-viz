@@ -990,3 +990,50 @@ fn cyclic_defaults_to_the_manifest_direction() {
     // Previously "up", which is not a cycle direction at all.
     assert_eq!(cyclic.direction, "clockwise");
 }
+
+#[derive(Serialize, SpytialDecorators)]
+#[icon(selector = "Person", path = "person.png")]
+struct BareLegacyIcon {
+    name: String,
+}
+
+#[test]
+fn bare_legacy_icon_uses_the_manifest_default() {
+    // `showLabels` defaults to false upstream, so the rewrite is a full-box
+    // icon with the label off. Defaulting it to true inverted both halves:
+    // a corner badge with the label on.
+    let decorators = BareLegacyIcon::decorators();
+    let style = decorators
+        .directives
+        .iter()
+        .find_map(|d| match d {
+            Directive::AtomStyle(s) => Some(&s.atom_style),
+            _ => None,
+        })
+        .expect("icon should desugar to an atom_style directive");
+
+    let icon = style.icon_style.as_ref().expect("icon_style block");
+    assert_eq!(icon.placement, Some(IconPlacement::Full));
+    assert_eq!(style.show_label, Some(false));
+}
+
+#[derive(Serialize, SpytialDecorators)]
+#[group(
+    selector = "Region",
+    name = "regions",
+    add_edge(points = "togroup", line_style(color = "gray"))
+)]
+struct GroupedWithConnector {
+    id: u32,
+}
+
+#[test]
+fn add_edge_block_round_trips() {
+    // The block form is validated like any other block now, so this also
+    // guards that valid leaves are not rejected by that check.
+    let decorators = GroupedWithConnector::decorators();
+    let yaml = to_yaml(&decorators).unwrap();
+    assert!(yaml.contains("addEdge:"), "in:\n{yaml}");
+    assert!(yaml.contains("points: togroup"), "in:\n{yaml}");
+    assert!(yaml.contains("color: gray"), "in:\n{yaml}");
+}
