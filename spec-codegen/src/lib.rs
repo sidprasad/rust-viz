@@ -510,6 +510,50 @@ pub fn vendored_manifest() -> std::io::Result<String> {
     std::fs::read_to_string(manifest_path())
 }
 
+/// Where the checked-in tables first differ from freshly generated ones, or
+/// `None` if they agree.
+///
+/// Line-ending style is not a difference. Git hands the file to a Windows
+/// checkout with CRLF while rustfmt always emits LF, so a byte comparison
+/// reports every line of a perfectly current file as drifted. The committed
+/// blob is LF either way, so normalizing here compares what is actually
+/// tracked.
+///
+/// Reports the first differing line rather than the whole file: these tables
+/// run to hundreds of lines, and a dump of both copies buries the one line
+/// that moved.
+pub fn first_difference(on_disk: &str, generated: &str) -> Option<String> {
+    let mut disk_lines = on_disk.lines();
+    let mut gen_lines = generated.lines();
+    let mut n = 0usize;
+    loop {
+        n += 1;
+        match (disk_lines.next(), gen_lines.next()) {
+            (None, None) => return None,
+            (a, b) if a == b => continue,
+            (Some(a), Some(b)) => {
+                return Some(format!(
+                    "first difference at line {n}:\n  on disk:    {a}\n  generated:  {b}"
+                ))
+            }
+            (Some(a), None) => {
+                return Some(format!(
+                    "the checked-in file has {n} or more lines; \
+                     the generated one ends at line {}.\n  extra on disk: {a}",
+                    n - 1
+                ))
+            }
+            (None, Some(b)) => {
+                return Some(format!(
+                    "the checked-in file ends at line {}; \
+                     the generated one continues.\n  missing: {b}",
+                    n - 1
+                ))
+            }
+        }
+    }
+}
+
 /// Path to the vendored manifest, relative to this crate.
 pub fn manifest_path() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

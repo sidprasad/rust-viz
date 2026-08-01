@@ -5,7 +5,9 @@
 //! a language version that is no longer shipped. Nothing fails to compile and
 //! nothing warns — the diagrams just stop matching the spec.
 
-use spytial_spec_codegen::{generate, manifest_path, tables_path, vendored_manifest};
+use spytial_spec_codegen::{
+    first_difference, generate, manifest_path, tables_path, vendored_manifest,
+};
 
 #[test]
 fn checked_in_tables_match_the_vendored_manifest() {
@@ -13,14 +15,15 @@ fn checked_in_tables_match_the_vendored_manifest() {
         .expect("manifest generates cleanly");
     let checked_in = std::fs::read_to_string(tables_path()).expect("spec_tables.rs is readable");
 
-    assert_eq!(
-        checked_in,
-        generated,
-        "\n{} is out of date with {}.\n\
-         Regenerate: cargo run --manifest-path spec-codegen/Cargo.toml\n",
-        tables_path().display(),
-        manifest_path().display(),
-    );
+    if let Some(diff) = first_difference(&checked_in, &generated) {
+        panic!(
+            "\n{} is out of date with {}.\n{}\n\n\
+             Regenerate: cargo run --manifest-path spec-codegen/Cargo.toml\n",
+            tables_path().display(),
+            manifest_path().display(),
+            diff,
+        );
+    }
 }
 
 /// The version the tables were generated from has to be the version that is

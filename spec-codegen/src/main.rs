@@ -7,7 +7,7 @@
 //! Pass `--check` to verify the checked-in file is current without writing it —
 //! that is what the drift test and CI do.
 
-use spytial_spec_codegen::{generate, tables_path, vendored_manifest};
+use spytial_spec_codegen::{first_difference, generate, tables_path, vendored_manifest};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let check_only = std::env::args().any(|a| a == "--check");
@@ -16,11 +16,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if check_only {
         let current = std::fs::read_to_string(&path).unwrap_or_default();
-        if current != generated {
+        if let Some(diff) = first_difference(&current, &generated) {
             eprintln!(
-                "{} is out of date with templates/vendor/spytial-language.json.\n\
+                "{} is out of date with templates/vendor/spytial-language.json.\n{}\n\n\
                  Regenerate: cargo run --manifest-path spec-codegen/Cargo.toml",
-                path.display()
+                path.display(),
+                diff,
             );
             std::process::exit(1);
         }
