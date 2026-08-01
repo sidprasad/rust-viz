@@ -398,7 +398,7 @@ struct Team {
 
 #[derive(Serialize, SpytialDecorators)]
 #[attribute(field = "role")]
-#[flag(name = "highlighted")]
+#[hide_field(field = "highlighted")]
 struct Member {
     role: String,
 }
@@ -418,9 +418,9 @@ fn decorators_inherited_through_vec() {
     assert!(
         team_decs.directives.iter().any(|d| matches!(
             d,
-            Directive::Flag(f) if f.flag == "highlighted"
+            Directive::HideField(h) if h.hide_field.field == "highlighted"
         )),
-        "Member's #[flag] should be inherited through Vec<Member>"
+        "Member's #[hide_field] should be inherited through Vec<Member>"
     );
 }
 
@@ -562,13 +562,13 @@ struct LevelA {
 }
 
 #[derive(Serialize, SpytialDecorators)]
-#[flag(name = "from_b")]
+#[hide_field(field = "from_b")]
 struct LevelB {
     c: LevelC,
 }
 
 #[derive(Serialize, SpytialDecorators)]
-#[flag(name = "from_c")]
+#[hide_field(field = "from_c")]
 struct LevelC {
     val: u32,
 }
@@ -577,19 +577,19 @@ struct LevelC {
 fn three_level_decorator_inheritance() {
     let a_decs = LevelA::decorators();
 
-    let flags: Vec<_> = a_decs
+    let hidden: Vec<_> = a_decs
         .directives
         .iter()
         .filter_map(|d| match d {
-            Directive::Flag(f) => Some(f.flag.as_str()),
+            Directive::HideField(h) => Some(h.hide_field.field.as_str()),
             _ => None,
         })
         .collect();
 
-    assert!(flags.contains(&"from_b"), "B's flag should reach A");
+    assert!(hidden.contains(&"from_b"), "B's directive should reach A");
     assert!(
-        flags.contains(&"from_c"),
-        "C's flag should reach A through B"
+        hidden.contains(&"from_c"),
+        "C's directive should reach A through B"
     );
 }
 
@@ -611,7 +611,7 @@ struct Undecorated {
 }
 
 #[derive(Serialize, SpytialDecorators)]
-#[flag(name = "owner")]
+#[hide_field(field = "owner")]
 struct ContainsUndecorated {
     data: Undecorated,
 }
@@ -620,11 +620,11 @@ struct ContainsUndecorated {
 fn undecorated_field_type_compiles_and_returns_only_own_decorators() {
     let decs = ContainsUndecorated::decorators();
 
-    // ContainsUndecorated has its own #[flag], but Undecorated contributes nothing.
+    // ContainsUndecorated has its own directive, but Undecorated contributes nothing.
     assert_eq!(decs.directives.len(), 1);
     assert!(decs.directives.iter().any(|d| matches!(
         d,
-        Directive::Flag(f) if f.flag == "owner"
+        Directive::HideField(h) if h.hide_field.field == "owner"
     )));
     assert!(decs.constraints.is_empty());
 }

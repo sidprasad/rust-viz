@@ -1,14 +1,14 @@
 use serde::Serialize;
 use spytial::spytial_annotations::{
-    to_yaml, Constraint, Directive, DrawEnd, GroupParams, HasSpytialDecorators, InferredEdgeDraw,
-    SpytialDecorators as SpytialDecoratorsType, SpytialDecoratorsBuilder,
+    to_yaml, Constraint, Directive, DrawEnd, GroupParams, HasSpytialDecorators, IconPlacement,
+    InferredEdgeDraw, SpytialDecorators as SpytialDecoratorsType, SpytialDecoratorsBuilder,
 };
 use spytial::SpytialDecorators;
 
 #[derive(Serialize, SpytialDecorators)]
 #[align(selector = "peer", direction = "horizontal")]
 #[orientation(selector = "peer", directions = ["right"])]
-#[flag(name = "important")]
+#[flag(name = "hideDisconnected")]
 struct DerivedNode {
     id: u32,
 }
@@ -27,14 +27,14 @@ fn derive_macro_emits_align_and_existing_decorators() {
             && orientation.orientation.directions == vec!["right".to_string()])
     }));
     assert!(decorators.directives.iter().any(|directive| {
-        matches!(directive, Directive::Flag(flag) if flag.flag == "important")
+        matches!(directive, Directive::Flag(flag) if flag.flag == "hideDisconnected")
     }));
 
     let yaml = to_yaml(&decorators).unwrap();
     assert!(yaml.contains("align:"));
     assert!(yaml.contains("direction: horizontal"));
     assert!(yaml.contains("orientation:"));
-    assert!(yaml.contains("flag: important"));
+    assert!(yaml.contains("flag: hideDisconnected"));
 }
 
 #[derive(Serialize, SpytialDecorators)]
@@ -848,4 +848,145 @@ directives: []
     } else {
         panic!("expected orientation, got {:?}", from_core.constraints[0]);
     }
+}
+
+// ──────────────────────────────────────────────
+// spytial-core 4.2/4.3 surface: the iconStyle block and atomStyle's
+// independent showLabel, which together replace the old `icon` directive.
+// ──────────────────────────────────────────────
+
+#[derive(Serialize, SpytialDecorators)]
+#[atom_style(
+    selector = "Person",
+    icon_style(path = "bi:person-fill", placement = "badge", opacity = 0.4),
+    show_label = false
+)]
+struct Badged {
+    name: String,
+}
+
+#[test]
+fn atom_style_carries_icon_style_and_show_label() {
+    let decorators = Badged::decorators();
+    let style = decorators
+        .directives
+        .iter()
+        .find_map(|d| match d {
+            Directive::AtomStyle(s) => Some(&s.atom_style),
+            _ => None,
+        })
+        .expect("atom_style directive");
+
+    let icon = style.icon_style.as_ref().expect("icon_style block");
+    assert_eq!(icon.path.as_deref(), Some("bi:person-fill"));
+    assert_eq!(icon.placement, Some(IconPlacement::Badge));
+    assert_eq!(icon.opacity, Some(0.4));
+    assert_eq!(style.show_label, Some(false));
+
+    let yaml = to_yaml(&decorators).unwrap();
+    assert!(
+        yaml.contains("iconStyle:"),
+        "expected iconStyle in:\n{yaml}"
+    );
+    assert!(yaml.contains("placement: badge"), "in:\n{yaml}");
+    assert!(yaml.contains("showLabel: false"), "in:\n{yaml}");
+}
+
+#[derive(Serialize, SpytialDecorators)]
+#[icon(selector = "Person", path = "person.png", show_labels = true)]
+struct LegacyIcon {
+    name: String,
+}
+
+#[test]
+fn legacy_icon_rewrites_onto_atom_style() {
+    let decorators = LegacyIcon::decorators();
+    let style = decorators
+        .directives
+        .iter()
+        .find_map(|d| match d {
+            Directive::AtomStyle(s) => Some(&s.atom_style),
+            _ => None,
+        })
+        .expect("icon should desugar to an atom_style directive");
+
+    // `showLabels: true` splits into a badge beside a visible label.
+    let icon = style.icon_style.as_ref().expect("icon_style block");
+    assert_eq!(icon.path.as_deref(), Some("person.png"));
+    assert_eq!(icon.placement, Some(IconPlacement::Badge));
+    assert_eq!(style.show_label, Some(true));
+
+    let yaml = to_yaml(&decorators).unwrap();
+    assert!(
+        !yaml.contains("icon:"),
+        "the deprecated icon directive should not reach the wire:\n{yaml}"
+    );
+}
+
+// ──────────────────────────────────────────────
+// Keys the runtime always supported but the macro did not expose.
+// ──────────────────────────────────────────────
+
+#[derive(Serialize, SpytialDecorators)]
+#[attribute(field = "role", selector = "Person", filter = "Manager")]
+#[hide_field(field = "secret", selector = "Person", filter = "internal")]
+struct Scoped {
+    role: String,
+    secret: String,
+}
+
+#[test]
+fn attribute_and_hide_field_carry_selector_and_filter() {
+    let decorators = Scoped::decorators();
+
+    let attribute = decorators
+        .directives
+        .iter()
+        .find_map(|d| match d {
+            Directive::Attribute(a) => Some(&a.attribute),
+            _ => None,
+        })
+        .expect("attribute directive");
+    assert_eq!(attribute.field, "role");
+    assert_eq!(attribute.selector.as_deref(), Some("Person"));
+    assert_eq!(attribute.filter.as_deref(), Some("Manager"));
+
+    let hidden = decorators
+        .directives
+        .iter()
+        .find_map(|d| match d {
+            Directive::HideField(h) => Some(&h.hide_field),
+            _ => None,
+        })
+        .expect("hide_field directive");
+    assert_eq!(hidden.field, "secret");
+    assert_eq!(hidden.selector.as_deref(), Some("Person"));
+    assert_eq!(hidden.filter.as_deref(), Some("internal"));
+}
+
+// ──────────────────────────────────────────────
+// Defaults now come from spytial-core's manifest rather than from values
+// that were never in the vocabulary.
+// ──────────────────────────────────────────────
+
+#[derive(Serialize, SpytialDecorators)]
+#[cyclic(selector = "next")]
+struct DefaultedCycle {
+    id: u32,
+}
+
+#[test]
+fn cyclic_defaults_to_the_manifest_direction() {
+    let decorators = DefaultedCycle::decorators();
+    let cyclic = decorators
+        .constraints
+        .iter()
+        .find_map(|c| match c {
+            Constraint::Cyclic(c) => Some(&c.cyclic),
+            _ => None,
+        })
+        .expect("cyclic constraint");
+
+    // Previously "up", which is not a cycle direction at all.
+    assert_eq!(cyclic.direction, "clockwise");
 }

@@ -4,6 +4,9 @@ use syn::{
     parse_macro_input, Attribute, Data, DeriveInput, Fields, GenericArgument, PathArguments, Type,
 };
 
+mod spec_tables;
+use spec_tables::FieldRule;
+
 /// Emit a decorator-probe call for each distinct user type reachable through
 /// this type's fields (looking through containers like `Vec`/`Option`/`Box`).
 fn collect_field_type_decorators(
@@ -102,25 +105,31 @@ fn generate_probe_call(type_name: &str) -> proc_macro2::TokenStream {
 ///
 /// # Supported Attributes
 ///
+/// Which keys each attribute accepts, and which values are legal, come from
+/// spytial-core's own language manifest — see `spec_tables.rs` and
+/// `spec-codegen/`. A key or value this crate rejects is one spytial-core would
+/// reject or silently ignore, so a typo fails here rather than rendering a
+/// diagram quietly missing what you asked for.
+///
 /// Styling uses the spytial-core 3.x nested blocks, written as groups that
 /// mirror the YAML 1:1: `line_style(color = ..., pattern = ..., weight = ...,
 /// highlight = ...)`, `text_style(size = ..., color = ...)`,
-/// `border_style(color = ..., width = ...)`, `fill_style(color = ...)`.
+/// `border_style(color = ..., width = ...)`, `fill_style(color = ...)`,
+/// `icon_style(path = ..., placement = ..., opacity = ...)`.
 ///
-/// - `#[attribute(field = "field_name", text_style(size = "small"))]` - Adds attribute directive (`text_style` optional)
-/// - `#[flag(name = "flag_name")]` - Adds flag directive
-/// - `#[orientation(selector = "sel", directions = ["up", "down"], negated = true)]` - Adds orientation constraint (`negated` optional)
-/// - `#[align(selector = "sel", direction = "horizontal", negated = true)]` - Adds align constraint (`negated` optional)
-/// - `#[cyclic(selector = "sel", direction = "up", negated = true)]` - Adds cyclic constraint (`negated` optional)
+/// - `#[attribute(field = "field_name", selector = "sel", filter = "...", text_style(size = "small"))]` - Adds attribute directive (all but `field` optional)
+/// - `#[flag(name = "hideDisconnected")]` - Adds flag directive. `name` is required and must be `hideDisconnected` or `hideDisconnectedBuiltIns`
+/// - `#[orientation(selector = "sel", directions = ["above"], negated = true)]` - Adds orientation constraint. `directions` is required; `above`/`below` and `left`/`right` are mutually exclusive, and a `directly*` variant admits only its own plain counterpart alongside it
+/// - `#[align(selector = "sel", direction = "horizontal", negated = true)]` - Adds align constraint (`direction` is `horizontal` or `vertical`; `negated` optional)
+/// - `#[cyclic(selector = "sel", direction = "clockwise", negated = true)]` - Adds cyclic constraint (`direction` is `clockwise` or `counterclockwise`, default `clockwise`; `negated` optional)
 /// - `#[group(selector = "sel", name = "group_name", add_edge(points = "togroup", line_style(pattern = "dashed")), text_style(color = "navy"), negated = true)]` - Adds selector-based group constraint (`add_edge` — bare `add_edge = "togroup"` or the styled block, `text_style` for the group's own label, and `negated` all optional)
 /// - `#[group(field = "field", group_on = 1, add_to_group = 2, negated = true)]` - Adds field-based group constraint (`negated` optional)
-/// - `#[atom_style(selector = "sel", border_style(color = "steelblue", width = 2.0), fill_style(color = "#eef6ff"), text_style(size = "large"))]` - Adds atom style directive (all parts optional)
+/// - `#[atom_style(selector = "sel", border_style(color = "steelblue", width = 2.0), fill_style(color = "#eef6ff"), icon_style(path = "person", placement = "badge", opacity = 0.4), text_style(size = "large"), show_label = false)]` - Adds atom style directive (all parts optional)
 /// - `#[atom_color(selector = "sel", value = "red")]` - Legacy form; rewrites to `atom_style` with `value` as the *border* colour
-/// - `#[size(selector = "sel", height = 20, width = 30)]` - Adds size directive
-/// - `#[icon(selector = "sel", path = "icon.png", show_labels = true)]` - Adds icon directive
+/// - `#[size(selector = "sel", height = 20, width = 30)]` - Adds size directive (both dimensions must be greater than 0)
+/// - `#[icon(selector = "sel", path = "icon.png", show_labels = true)]` - Legacy form; rewrites to `atom_style`, splitting the one `show_labels` boolean into `icon_style(placement = ...)` and `show_label`
 /// - `#[edge_style(field = "field", line_style(color = "blue", pattern = "dashed", weight = 2.0), text_style(size = "small"), show_label = true, hidden = false, filter = "...", selector = "...")]` - Adds edge style directive. The legacy flat keys (`value = "blue", style = "dashed", weight = 2.0`) still parse and rewrite onto the blocks (`value` -> line colour); mixing the two shapes is a compile error. An attribute with no styling at all (e.g. `#[edge_style(field = "left")]`) keeps the 0.1 default of a blue line — write a block to opt out of the default
-/// - `#[projection(sig = "signature")]` - Adds projection directive
-/// - `#[hide_field(field = "field")]` - Adds hide field directive
+/// - `#[hide_field(field = "field", selector = "sel", filter = "...")]` - Adds hide field directive (all but `field` optional)
 /// - `#[hide_atom(selector = "sel")]` - Adds hide atom directive
 /// - `#[inferred_edge(name = "edge", selector = "sel", draw = "_ -> regions", line_style(color = "gray", pattern = "dotted"))]` - Adds inferred edge directive (`draw`/`line_style`/`text_style` optional). `draw = "<end> -> <end>"` reinterprets where each end attaches: `_` is the tuple's own atom, a group-constraint name is that group's hull
 /// - `#[tag(to_tag = "sel", name = "attr", value = "n-ary selector", text_style(size = "small"))]` - Adds tag directive (`text_style` optional)
@@ -132,7 +141,7 @@ fn generate_probe_call(type_name: &str) -> proc_macro2::TokenStream {
 ///
 /// #[derive(Serialize, SpytialDecorators)]
 /// #[attribute(field = "name")]
-/// #[flag(name = "important")]
+/// #[flag(name = "hideDisconnected")]
 /// struct Person {
 ///     name: String,
 ///     age: u32,
@@ -152,7 +161,6 @@ fn generate_probe_call(type_name: &str) -> proc_macro2::TokenStream {
         size,
         icon,
         edge_style,
-        projection,
         hide_field,
         hide_atom,
         inferred_edge,
@@ -175,10 +183,17 @@ pub fn derive_spytial_decorators(input: TokenStream) -> TokenStream {
             Err(err) => return err.to_compile_error().into(),
         };
         match parsed {
-            Some(SpatialAttribute::Attribute { field, text_style }) => {
+            Some(SpatialAttribute::Attribute {
+                field,
+                selector,
+                filter,
+                text_style,
+            }) => {
+                let selector_arg = quote_opt_str_ref(&selector);
+                let filter_arg = quote_opt_str_ref(&filter);
                 let ts = quote_text_style(&text_style);
                 decorator_calls.push(quote! {
-                    .attribute_styled(#field, None, #ts)
+                    .attribute_styled(#field, #selector_arg, #filter_arg, #ts)
                 });
             }
             Some(SpatialAttribute::Flag { name }) => {
@@ -245,17 +260,21 @@ pub fn derive_spytial_decorators(input: TokenStream) -> TokenStream {
                 selector,
                 fill_style,
                 border_style,
+                icon_style,
                 text_style,
+                show_label,
             }) => {
-                let selector_arg = match selector {
-                    Some(s) => quote! { Some(#s) },
-                    None => quote! { None },
-                };
+                let selector_arg = quote_opt_str_ref(&selector);
                 let fs = quote_fill_style(&fill_style);
                 let bs = quote_border_style(&border_style);
+                let is = quote_icon_style(&icon_style);
                 let ts = quote_text_style(&text_style);
+                let sl = match show_label {
+                    Some(b) => quote! { Some(#b) },
+                    None => quote! { None },
+                };
                 decorator_calls.push(quote! {
-                    .atom_style(#selector_arg, #fs, #bs, #ts)
+                    .atom_style(#selector_arg, #fs, #bs, #is, #ts, #sl)
                 });
             }
             Some(SpatialAttribute::Size {
@@ -352,18 +371,15 @@ pub fn derive_spytial_decorators(input: TokenStream) -> TokenStream {
                     )
                 });
             }
-            Some(SpatialAttribute::Projection { sig }) => {
+            Some(SpatialAttribute::HideField {
+                field,
+                selector,
+                filter,
+            }) => {
+                let selector_arg = quote_opt_str_ref(&selector);
+                let filter_arg = quote_opt_str_ref(&filter);
                 decorator_calls.push(quote! {
-                    .projection(#sig)
-                });
-            }
-            Some(SpatialAttribute::HideField { field, selector }) => {
-                let selector_arg = match selector {
-                    Some(s) => quote! { Some(#s) },
-                    None => quote! { None },
-                };
-                decorator_calls.push(quote! {
-                    .hide_field(#field, #selector_arg)
+                    .hide_field(#field, #selector_arg, #filter_arg)
                 });
             }
             Some(SpatialAttribute::HideAtom { selector }) => {
@@ -440,6 +456,8 @@ pub fn derive_spytial_decorators(input: TokenStream) -> TokenStream {
 enum SpatialAttribute {
     Attribute {
         field: String,
+        selector: Option<String>,
+        filter: Option<String>,
         text_style: Option<TextStyleTok>,
     },
     Flag {
@@ -481,7 +499,9 @@ enum SpatialAttribute {
         selector: Option<String>,
         fill_style: Option<FillStyleTok>,
         border_style: Option<BorderStyleTok>,
+        icon_style: Option<IconStyleTok>,
         text_style: Option<TextStyleTok>,
+        show_label: Option<bool>,
     },
     Size {
         selector: String,
@@ -515,12 +535,10 @@ enum SpatialAttribute {
         show_label: Option<bool>,
         hidden: Option<bool>,
     },
-    Projection {
-        sig: String,
-    },
     HideField {
         field: String,
         selector: Option<String>,
+        filter: Option<String>,
     },
     HideAtom {
         selector: String,
@@ -565,8 +583,6 @@ fn parse_spatial_attribute(attr: &Attribute) -> Result<Option<SpatialAttribute>,
         parse_icon_args(attr)
     } else if path.is_ident("edge_style") {
         parse_edge_style_args(attr)
-    } else if path.is_ident("projection") {
-        parse_projection_args(attr)
     } else if path.is_ident("hide_field") {
         parse_hide_field_args(attr)
     } else if path.is_ident("hide_atom") {
@@ -580,18 +596,149 @@ fn parse_spatial_attribute(attr: &Attribute) -> Result<Option<SpatialAttribute>,
     }
 }
 
+/// The generated spec for `attr_name`.
+///
+/// Every authoring attribute has one — the derive's `attributes(...)` list and
+/// the table are generated from the same manifest — so a miss is a bug in the
+/// macro rather than in user code.
+fn spec_for(attr_name: &str) -> &'static spec_tables::AttrSpec {
+    spec_tables::attr_spec(attr_name).unwrap_or_else(|| {
+        panic!("no generated spec for #[{attr_name}]; regenerate spec_tables.rs")
+    })
+}
+
+/// Explain what spytial-core does with a value the macro just rejected.
+///
+/// The macro rejects either way; this only tells the reader whether they were
+/// heading for a hard parse failure downstream or for the much worse outcome —
+/// a diagram that renders, silently missing what they asked for.
+fn enforcement_note(rule: &FieldRule) -> &'static str {
+    match rule.enforcement {
+        Some(spec_tables::enforcement::PARSE_ERROR) => " (spytial-core rejects the spec outright)",
+        Some(spec_tables::enforcement::VALUE_IGNORED) => {
+            " (spytial-core would silently drop it and use the default)"
+        }
+        Some(spec_tables::enforcement::UNCHECKED) => {
+            " (spytial-core would accept it silently; it would simply match nothing)"
+        }
+        _ => "",
+    }
+}
+
+/// Check a scalar against its generated closed vocabulary, if it has one.
+///
+/// `context` names where the key was written, for the error message: an
+/// attribute reads `#[align(...)]`, a style block reads `line_style(...)`.
+fn check_vocabulary(
+    attr: &Attribute,
+    context: &str,
+    rule: &FieldRule,
+    value: &str,
+) -> Result<(), syn::Error> {
+    let Some(values) = rule.values else {
+        return Ok(());
+    };
+    if values.contains(&value) {
+        return Ok(());
+    }
+    Err(err(
+        attr,
+        format!(
+            "invalid `{}` in {}: {:?}; expected one of: {}{}",
+            rule.key,
+            context,
+            value,
+            values.join(", "),
+            enforcement_note(rule),
+        ),
+    ))
+}
+
+/// Check an attribute's `direction` against its generated vocabulary.
+fn check_direction(attr: &Attribute, attr_name: &str, value: &str) -> Result<(), syn::Error> {
+    let rule = spec_for(attr_name).rule("direction").unwrap_or_else(|| {
+        panic!("#[{attr_name}] has no direction rule; regenerate spec_tables.rs")
+    });
+    check_vocabulary(attr, &format!("#[{attr_name}(...)]"), rule, value)
+}
+
+/// Check one of an attribute's numeric keys against its generated bounds.
+fn check_attr_num(
+    attr: &Attribute,
+    attr_name: &str,
+    key: &str,
+    value: f64,
+) -> Result<(), syn::Error> {
+    let Some(rule) = spec_for(attr_name).rule(key) else {
+        return Ok(());
+    };
+    check_bounds(attr, &format!("#[{attr_name}(...)]"), rule, value)
+}
+
+/// The value spytial-core assumes when a field is absent, per the manifest.
+///
+/// Only called for fields the manifest actually gives a default; a miss means
+/// the language changed and the caller's fallback needs revisiting.
+fn default_for(attr_name: &str, key: &str) -> &'static str {
+    spec_for(attr_name)
+        .rule(key)
+        .and_then(|r| r.default)
+        .unwrap_or_else(|| {
+            panic!("#[{attr_name}]'s `{key}` has no manifest default; regenerate spec_tables.rs")
+        })
+}
+
+/// Check a number against its generated bounds.
+fn check_bounds(
+    attr: &Attribute,
+    context: &str,
+    rule: &FieldRule,
+    value: f64,
+) -> Result<(), syn::Error> {
+    let fail = |expected: String| {
+        Err(err(
+            attr,
+            format!(
+                "invalid `{}` in {}: {}; {}{}",
+                rule.key,
+                context,
+                value,
+                expected,
+                enforcement_note(rule),
+            ),
+        ))
+    };
+    if !value.is_finite() {
+        return fail("must be a finite number".to_string());
+    }
+    if let Some(x) = rule.exclusive_min {
+        if value <= x {
+            return fail(format!("must be greater than {x}"));
+        }
+    }
+    if let Some(m) = rule.min {
+        if value < m {
+            return fail(format!("must be at least {m}"));
+        }
+    }
+    if let Some(m) = rule.max {
+        if value > m {
+            return fail(format!("must be at most {m}"));
+        }
+    }
+    Ok(())
+}
+
 /// Walk the meta items of `attr` and emit a `syn::Error` (pointing at the
-/// offending key's span) for any key that isn't in `known`.  This catches typos
-/// like `#[orientation(typo = "...")]` at compile time instead of silently
-/// falling back to defaults.
+/// offending key's span) for any key the generated spec doesn't list.  This
+/// catches typos like `#[orientation(typo = "...")]` at compile time instead of
+/// silently falling back to defaults.
 ///
 /// The value side of each pair is consumed but not interpreted; the existing
 /// string-based extractors handle the actual value parsing.
-fn validate_known_keys(
-    attr: &Attribute,
-    attr_name: &str,
-    known: &[&str],
-) -> Result<(), syn::Error> {
+fn validate_known_keys(attr: &Attribute, attr_name: &str) -> Result<(), syn::Error> {
+    let known = spec_for(attr_name).keys;
+
     // Attributes like `#[flag]` with no list body have no keys to check.
     if attr.meta.require_list().is_err() {
         return Ok(());
@@ -634,54 +781,142 @@ fn validate_known_keys(
 }
 
 fn parse_attribute_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::Error> {
-    validate_known_keys(attr, "attribute", &["field", "text_style"])?;
+    validate_known_keys(attr, "attribute")?;
     // Look for `field = "..."`; fall back to `name` when it's omitted.
     if let Ok(meta) = attr.meta.require_list() {
         let tokens = &meta.tokens;
         let token_str = tokens.to_string();
+        let stripped = strip_groups(&token_str);
         let text_style = parse_text_style_group(attr, &token_str)?;
 
-        if let Some(field) = extract_string_from_tokens(&strip_groups(&token_str), "field") {
-            return Ok(Some(SpatialAttribute::Attribute { field, text_style }));
-        }
         return Ok(Some(SpatialAttribute::Attribute {
-            field: "name".to_string(),
+            field: extract_string_from_tokens(&stripped, "field")
+                .unwrap_or_else(|| "name".to_string()),
+            selector: extract_string_from_tokens(&stripped, "selector"),
+            filter: extract_string_from_tokens(&stripped, "filter"),
             text_style,
         }));
     }
 
     Ok(Some(SpatialAttribute::Attribute {
         field: "name".to_string(),
+        selector: None,
+        filter: None,
         text_style: None,
     }))
 }
 
 fn parse_flag_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::Error> {
-    validate_known_keys(attr, "flag", &["name"])?;
-    if let Ok(meta) = attr.meta.require_list() {
-        let tokens = &meta.tokens;
-        let token_str = tokens.to_string();
+    validate_known_keys(attr, "flag")?;
+    let name = attr
+        .meta
+        .require_list()
+        .ok()
+        .and_then(|meta| extract_string_from_tokens(&meta.tokens.to_string(), "name"));
 
-        if let Some(name) = extract_string_from_tokens(&token_str, "name") {
-            return Ok(Some(SpatialAttribute::Flag { name }));
+    // `flag` is a closed two-value vocabulary with no default. The old fallback
+    // here was "important", which spytial-core has never recognized — a bare
+    // `#[flag]` produced a directive the engine silently dropped. Requiring the
+    // name is the only honest option.
+    let Some(name) = name else {
+        let rule = spec_for("flag")
+            .rule("name")
+            .expect("flag spec has no name rule; regenerate spec_tables.rs");
+        return Err(err(
+            attr,
+            format!(
+                "#[flag] needs a name: expected one of: {}",
+                rule.values.unwrap_or(&[]).join(", "),
+            ),
+        ));
+    };
+
+    let rule = spec_for("flag")
+        .rule("name")
+        .expect("flag spec has no name rule; regenerate spec_tables.rs");
+    check_vocabulary(attr, "#[flag(...)]", rule, &name)?;
+    Ok(Some(SpatialAttribute::Flag { name }))
+}
+
+/// Check a `directions` list against the generated vocabulary and list rules.
+///
+/// spytial-core rejects a contradictory set at parse time (`above` with
+/// `below`, or a `directly*` variant alongside anything but its own plain
+/// counterpart) but silently accepts a value outside the vocabulary, which then
+/// matches nothing. Both fail here.
+fn check_directions(attr: &Attribute, directions: &[String]) -> Result<(), syn::Error> {
+    let rule = spec_for("orientation")
+        .rule("directions")
+        .expect("orientation spec has no directions rule; regenerate spec_tables.rs");
+
+    if directions.is_empty() {
+        return Err(err(
+            attr,
+            format!(
+                "#[orientation(...)] needs at least one direction: expected one or more of: {}",
+                rule.values.unwrap_or(&[]).join(", "),
+            ),
+        ));
+    }
+
+    for d in directions {
+        check_vocabulary(attr, "#[orientation(...)]", rule, d)?;
+    }
+
+    for pair in spec_tables::ORIENTATION_AT_MOST_ONE_OF {
+        let present: Vec<&str> = pair
+            .iter()
+            .copied()
+            .filter(|v| directions.iter().any(|d| d == v))
+            .collect();
+        if present.len() > 1 {
+            return Err(err(
+                attr,
+                format!(
+                    "contradictory directions in #[orientation(...)]: {}; at most one of {} may be given",
+                    present.join(" and "),
+                    pair.join(", "),
+                ),
+            ));
         }
     }
 
-    Ok(Some(SpatialAttribute::Flag {
-        name: "important".to_string(),
-    }))
+    for (direct, allowed) in spec_tables::ORIENTATION_NARROWS_TO {
+        if !directions.iter().any(|d| d == direct) {
+            continue;
+        }
+        if let Some(bad) = directions.iter().find(|d| !allowed.contains(&d.as_str())) {
+            return Err(err(
+                attr,
+                format!(
+                    "`{direct}` in #[orientation(...)] cannot be combined with `{bad}`; \
+                     alongside `{direct}` the only other value allowed is `{}`",
+                    allowed
+                        .iter()
+                        .find(|a| *a != direct)
+                        .copied()
+                        .unwrap_or(direct),
+                ),
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 fn parse_orientation_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::Error> {
-    validate_known_keys(attr, "orientation", &["selector", "directions", "negated"])?;
+    validate_known_keys(attr, "orientation")?;
     if let Ok(meta) = attr.meta.require_list() {
         let tokens = &meta.tokens;
         let token_str = tokens.to_string();
 
         let selector =
             extract_string_from_tokens(&token_str, "selector").unwrap_or_else(|| "".to_string());
-        let directions = extract_array_from_tokens(&token_str, "directions")
-            .unwrap_or_else(|| vec!["up".to_string(), "down".to_string()]);
+        // No default: `directions` is required, and the old fallback of
+        // ["up", "down"] was outside the vocabulary entirely, so it produced a
+        // constraint that matched nothing.
+        let directions = extract_array_from_tokens(&token_str, "directions").unwrap_or_default();
+        check_directions(attr, &directions)?;
         let negated = extract_bool_from_tokens(&token_str, "negated").unwrap_or(false);
 
         return Ok(Some(SpatialAttribute::Orientation {
@@ -697,20 +932,7 @@ fn parse_orientation_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, 
 fn parse_group_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::Error> {
     // `group` accepts two shapes (selector-based or field-based); accept the
     // union of valid keys here and let the body pick the right variant.
-    validate_known_keys(
-        attr,
-        "group",
-        &[
-            "selector",
-            "name",
-            "field",
-            "group_on",
-            "add_to_group",
-            "add_edge",
-            "text_style",
-            "negated",
-        ],
-    )?;
+    validate_known_keys(attr, "group")?;
     if let Ok(meta) = attr.meta.require_list() {
         let tokens = &meta.tokens;
         let token_str = tokens.to_string();
@@ -755,7 +977,7 @@ fn parse_group_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::E
 }
 
 fn parse_align_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::Error> {
-    validate_known_keys(attr, "align", &["selector", "direction", "negated"])?;
+    validate_known_keys(attr, "align")?;
     if let Ok(meta) = attr.meta.require_list() {
         let tokens = &meta.tokens;
         let token_str = tokens.to_string();
@@ -764,6 +986,7 @@ fn parse_align_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::E
             extract_string_from_tokens(&token_str, "selector").unwrap_or_else(|| "".to_string());
         let direction = extract_string_from_tokens(&token_str, "direction")
             .unwrap_or_else(|| "horizontal".to_string());
+        check_direction(attr, "align", &direction)?;
         let negated = extract_bool_from_tokens(&token_str, "negated").unwrap_or(false);
 
         Ok(Some(SpatialAttribute::Align {
@@ -777,15 +1000,19 @@ fn parse_align_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::E
 }
 
 fn parse_cyclic_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::Error> {
-    validate_known_keys(attr, "cyclic", &["selector", "direction", "negated"])?;
+    validate_known_keys(attr, "cyclic")?;
     if let Ok(meta) = attr.meta.require_list() {
         let tokens = &meta.tokens;
         let token_str = tokens.to_string();
 
         let selector =
             extract_string_from_tokens(&token_str, "selector").unwrap_or_else(|| "".to_string());
-        let direction =
-            extract_string_from_tokens(&token_str, "direction").unwrap_or_else(|| "up".to_string());
+        // The manifest's own default. The old fallback here was "up", which is
+        // not a cycle direction at all — spytial-core would accept it and lay
+        // out clockwise regardless.
+        let direction = extract_string_from_tokens(&token_str, "direction")
+            .unwrap_or_else(|| default_for("cyclic", "direction").to_string());
+        check_direction(attr, "cyclic", &direction)?;
         let negated = extract_bool_from_tokens(&token_str, "negated").unwrap_or(false);
 
         Ok(Some(SpatialAttribute::Cyclic {
@@ -799,7 +1026,7 @@ fn parse_cyclic_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::
 }
 
 fn parse_atom_color_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::Error> {
-    validate_known_keys(attr, "atom_color", &["selector", "value"])?;
+    validate_known_keys(attr, "atom_color")?;
     if let Ok(meta) = attr.meta.require_list() {
         let tokens = &meta.tokens;
         let token_str = tokens.to_string();
@@ -816,7 +1043,7 @@ fn parse_atom_color_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, s
 }
 
 fn parse_size_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::Error> {
-    validate_known_keys(attr, "size", &["selector", "height", "width"])?;
+    validate_known_keys(attr, "size")?;
     if let Ok(meta) = attr.meta.require_list() {
         let tokens = &meta.tokens;
         let token_str = tokens.to_string();
@@ -825,6 +1052,10 @@ fn parse_size_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::Er
             extract_string_from_tokens(&token_str, "selector").unwrap_or_else(|| "".to_string());
         let height = extract_number_from_tokens(&token_str, "height").unwrap_or(20);
         let width = extract_number_from_tokens(&token_str, "width").unwrap_or(30);
+        // Both are `exclusiveMinimum: 0` upstream; a zero-sized atom is a
+        // parse error there, so catch it here.
+        check_attr_num(attr, "size", "height", height as f64)?;
+        check_attr_num(attr, "size", "width", width as f64)?;
 
         Ok(Some(SpatialAttribute::Size {
             selector,
@@ -837,7 +1068,7 @@ fn parse_size_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::Er
 }
 
 fn parse_icon_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::Error> {
-    validate_known_keys(attr, "icon", &["selector", "path", "show_labels"])?;
+    validate_known_keys(attr, "icon")?;
     if let Ok(meta) = attr.meta.require_list() {
         let tokens = &meta.tokens;
         let token_str = tokens.to_string();
@@ -859,22 +1090,7 @@ fn parse_icon_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::Er
 }
 
 fn parse_edge_style_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::Error> {
-    validate_known_keys(
-        attr,
-        "edge_style",
-        &[
-            "field",
-            "value",
-            "selector",
-            "filter",
-            "style",
-            "weight",
-            "show_label",
-            "hidden",
-            "line_style",
-            "text_style",
-        ],
-    )?;
+    validate_known_keys(attr, "edge_style")?;
     if let Ok(meta) = attr.meta.require_list() {
         let tokens = &meta.tokens;
         let token_str = tokens.to_string();
@@ -941,11 +1157,7 @@ fn parse_edge_style_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, s
 }
 
 fn parse_atom_style_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::Error> {
-    validate_known_keys(
-        attr,
-        "atom_style",
-        &["selector", "fill_style", "border_style", "text_style"],
-    )?;
+    validate_known_keys(attr, "atom_style")?;
     if let Ok(meta) = attr.meta.require_list() {
         let tokens = &meta.tokens;
         let token_str = tokens.to_string();
@@ -953,32 +1165,19 @@ fn parse_atom_style_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, s
 
         Ok(Some(SpatialAttribute::AtomStyle {
             selector: extract_string_from_tokens(&stripped, "selector"),
-            fill_style: parse_fill_style_group(&token_str),
+            fill_style: parse_fill_style_group(attr, &token_str)?,
             border_style: parse_border_style_group(attr, &token_str)?,
+            icon_style: parse_icon_style_group(attr, &token_str)?,
             text_style: parse_text_style_group(attr, &token_str)?,
+            show_label: extract_bool_from_tokens(&stripped, "show_label"),
         }))
     } else {
         Ok(None)
     }
 }
 
-fn parse_projection_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::Error> {
-    validate_known_keys(attr, "projection", &["sig"])?;
-    if let Ok(meta) = attr.meta.require_list() {
-        let tokens = &meta.tokens;
-        let token_str = tokens.to_string();
-
-        let sig =
-            extract_string_from_tokens(&token_str, "sig").unwrap_or_else(|| "default".to_string());
-
-        Ok(Some(SpatialAttribute::Projection { sig }))
-    } else {
-        Ok(None)
-    }
-}
-
 fn parse_hide_field_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::Error> {
-    validate_known_keys(attr, "hide_field", &["field", "selector"])?;
+    validate_known_keys(attr, "hide_field")?;
     if let Ok(meta) = attr.meta.require_list() {
         let tokens = &meta.tokens;
         let token_str = tokens.to_string();
@@ -986,15 +1185,20 @@ fn parse_hide_field_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, s
         let field =
             extract_string_from_tokens(&token_str, "field").unwrap_or_else(|| "field".to_string());
         let selector = extract_string_from_tokens(&token_str, "selector");
+        let filter = extract_string_from_tokens(&token_str, "filter");
 
-        Ok(Some(SpatialAttribute::HideField { field, selector }))
+        Ok(Some(SpatialAttribute::HideField {
+            field,
+            selector,
+            filter,
+        }))
     } else {
         Ok(None)
     }
 }
 
 fn parse_hide_atom_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::Error> {
-    validate_known_keys(attr, "hide_atom", &["selector"])?;
+    validate_known_keys(attr, "hide_atom")?;
     if let Ok(meta) = attr.meta.require_list() {
         let tokens = &meta.tokens;
         let token_str = tokens.to_string();
@@ -1009,11 +1213,7 @@ fn parse_hide_atom_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, sy
 }
 
 fn parse_inferred_edge_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::Error> {
-    validate_known_keys(
-        attr,
-        "inferred_edge",
-        &["name", "selector", "draw", "line_style", "text_style"],
-    )?;
+    validate_known_keys(attr, "inferred_edge")?;
     if let Ok(meta) = attr.meta.require_list() {
         let tokens = &meta.tokens;
         let token_str = tokens.to_string();
@@ -1037,7 +1237,7 @@ fn parse_inferred_edge_args(attr: &Attribute) -> Result<Option<SpatialAttribute>
 }
 
 fn parse_tag_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::Error> {
-    validate_known_keys(attr, "tag", &["to_tag", "name", "value", "text_style"])?;
+    validate_known_keys(attr, "tag")?;
     if let Ok(meta) = attr.meta.require_list() {
         let tokens = &meta.tokens;
         let token_str = tokens.to_string();
@@ -1096,6 +1296,13 @@ struct FillStyleTok {
     color: Option<String>,
 }
 
+#[derive(Debug, Default)]
+struct IconStyleTok {
+    path: Option<String>,
+    placement: Option<String>,
+    opacity: Option<f64>,
+}
+
 /// A parsed `inferred_edge` `draw = "<end> -> <end>"` value. Each end is
 /// `None` (written `_`: the atom itself) or a group-constraint name.
 #[derive(Debug)]
@@ -1120,47 +1327,59 @@ fn err(attr: &Attribute, msg: String) -> syn::Error {
     syn::Error::new_spanned(attr, msg)
 }
 
-fn check_pattern(attr: &Attribute, pattern: &str) -> Result<(), syn::Error> {
-    match pattern {
-        "solid" | "dashed" | "dotted" => Ok(()),
-        other => Err(err(
-            attr,
-            format!(
-                "invalid line pattern {other:?}; expected \"solid\", \"dashed\", or \"dotted\""
-            ),
-        )),
-    }
+/// The generated spec for a style block.
+///
+/// Like [`spec_for`], a miss is a macro bug: the block parsers below and the
+/// table are both derived from the manifest's `blocks`.
+fn block_for(block: &str) -> &'static spec_tables::BlockSpec {
+    spec_tables::block_spec(block)
+        .unwrap_or_else(|| panic!("no generated spec for {block}(...); regenerate spec_tables.rs"))
 }
 
-fn check_size(attr: &Attribute, size: &str) -> Result<(), syn::Error> {
-    match size {
-        "small" | "normal" | "large" => Ok(()),
-        other => Err(err(
-            attr,
-            format!("invalid text size {other:?}; expected \"small\", \"normal\", or \"large\""),
-        )),
-    }
+/// Validate one string leaf of a style block against its generated rule.
+fn check_block_str(
+    attr: &Attribute,
+    block: &str,
+    leaf: &str,
+    value: &Option<String>,
+) -> Result<(), syn::Error> {
+    let (Some(value), Some(rule)) = (value, block_for(block).rule(leaf)) else {
+        return Ok(());
+    };
+    check_vocabulary(attr, &format!("{block}(...)"), rule, value)
 }
 
-fn check_points(attr: &Attribute, points: &str) -> Result<(), syn::Error> {
-    match points {
-        "none" | "togroup" | "fromgroup" => Ok(()),
-        other => Err(err(
-            attr,
-            format!("invalid addEdge direction {other:?}; expected \"none\", \"togroup\", or \"fromgroup\""),
-        )),
-    }
+/// Validate one numeric leaf of a style block against its generated rule.
+fn check_block_num(
+    attr: &Attribute,
+    block: &str,
+    leaf: &str,
+    value: Option<f64>,
+) -> Result<(), syn::Error> {
+    let (Some(value), Some(rule)) = (value, block_for(block).rule(leaf)) else {
+        return Ok(());
+    };
+    check_bounds(attr, &format!("{block}(...)"), rule, value)
 }
 
-fn check_positive(attr: &Attribute, value: f64, what: &str) -> Result<(), syn::Error> {
-    if value.is_finite() && value > 0.0 {
-        Ok(())
-    } else {
-        Err(err(
-            attr,
-            format!("{what} must be a number greater than 0; got {value}"),
-        ))
+/// Reject any leaf inside a style block that the generated spec doesn't list,
+/// so `line_style(colour = "red")` fails here instead of rendering unstyled.
+fn validate_block_leaves(attr: &Attribute, block: &str, body: &str) -> Result<(), syn::Error> {
+    let known = block_for(block).rules;
+    for leaf in top_level_keys(body) {
+        if !known.iter().any(|r| r.key == leaf) {
+            return Err(err(
+                attr,
+                format!(
+                    "unknown leaf `{}` in {}(...); expected one of: {}",
+                    leaf,
+                    block,
+                    known.iter().map(|r| r.key).collect::<Vec<_>>().join(", "),
+                ),
+            ));
+        }
     }
+    Ok(())
 }
 
 /// Parse a `line_style(...)` group out of `tokens`, validating its leaves.
@@ -1171,18 +1390,15 @@ fn parse_line_style_group(
     let Some(body) = extract_group_from_tokens(tokens, "line_style") else {
         return Ok(None);
     };
+    validate_block_leaves(attr, "line_style", &body)?;
     let ls = LineStyleTok {
         color: extract_string_from_tokens(&body, "color"),
         pattern: extract_string_from_tokens(&body, "pattern"),
         weight: extract_float_from_tokens(&body, "weight"),
         highlight: extract_string_from_tokens(&body, "highlight"),
     };
-    if let Some(p) = &ls.pattern {
-        check_pattern(attr, p)?;
-    }
-    if let Some(w) = ls.weight {
-        check_positive(attr, w, "line_style weight")?;
-    }
+    check_block_str(attr, "line_style", "pattern", &ls.pattern)?;
+    check_block_num(attr, "line_style", "weight", ls.weight)?;
     Ok(Some(ls))
 }
 
@@ -1194,13 +1410,12 @@ fn parse_text_style_group(
     let Some(body) = extract_group_from_tokens(tokens, "text_style") else {
         return Ok(None);
     };
+    validate_block_leaves(attr, "text_style", &body)?;
     let ts = TextStyleTok {
         size: extract_string_from_tokens(&body, "size"),
         color: extract_string_from_tokens(&body, "color"),
     };
-    if let Some(s) = &ts.size {
-        check_size(attr, s)?;
-    }
+    check_block_str(attr, "text_style", "size", &ts.size)?;
     Ok(Some(ts))
 }
 
@@ -1212,21 +1427,50 @@ fn parse_border_style_group(
     let Some(body) = extract_group_from_tokens(tokens, "border_style") else {
         return Ok(None);
     };
+    validate_block_leaves(attr, "border_style", &body)?;
     let bs = BorderStyleTok {
         color: extract_string_from_tokens(&body, "color"),
         width: extract_float_from_tokens(&body, "width"),
     };
-    if let Some(w) = bs.width {
-        check_positive(attr, w, "border_style width")?;
-    }
+    check_block_num(attr, "border_style", "width", bs.width)?;
     Ok(Some(bs))
 }
 
 /// Parse a `fill_style(...)` group out of `tokens`.
-fn parse_fill_style_group(tokens: &str) -> Option<FillStyleTok> {
-    extract_group_from_tokens(tokens, "fill_style").map(|body| FillStyleTok {
+fn parse_fill_style_group(
+    attr: &Attribute,
+    tokens: &str,
+) -> Result<Option<FillStyleTok>, syn::Error> {
+    let Some(body) = extract_group_from_tokens(tokens, "fill_style") else {
+        return Ok(None);
+    };
+    validate_block_leaves(attr, "fill_style", &body)?;
+    Ok(Some(FillStyleTok {
         color: extract_string_from_tokens(&body, "color"),
-    })
+    }))
+}
+
+/// Parse an `icon_style(...)` group out of `tokens`, validating its leaves.
+///
+/// spytial-core 4.2 split the old `icon` directive's single `showLabels` boolean
+/// into an independent icon block and an `atom_style` `show_label`, which is what
+/// makes a faded watermark — or a hidden label with no icon — expressible.
+fn parse_icon_style_group(
+    attr: &Attribute,
+    tokens: &str,
+) -> Result<Option<IconStyleTok>, syn::Error> {
+    let Some(body) = extract_group_from_tokens(tokens, "icon_style") else {
+        return Ok(None);
+    };
+    validate_block_leaves(attr, "icon_style", &body)?;
+    let is = IconStyleTok {
+        path: extract_string_from_tokens(&body, "path"),
+        placement: extract_string_from_tokens(&body, "placement"),
+        opacity: extract_float_from_tokens(&body, "opacity"),
+    };
+    check_block_str(attr, "icon_style", "placement", &is.placement)?;
+    check_block_num(attr, "icon_style", "opacity", is.opacity)?;
+    Ok(Some(is))
 }
 
 /// Parse an `inferred_edge` `draw` value out of the stripped token string.
@@ -1279,10 +1523,16 @@ fn parse_add_edge(
     tokens: &str,
     stripped: &str,
 ) -> Result<Option<AddEdgeTok>, syn::Error> {
+    // The bare and block forms carry the same closed vocabulary; the manifest
+    // states it once, on `group`'s `addEdge` field.
+    let points_rule = spec_for("group")
+        .rule("add_edge")
+        .expect("group spec has no add_edge rule; regenerate spec_tables.rs");
+
     if let Some(body) = extract_group_from_tokens(tokens, "add_edge") {
         let points =
             extract_string_from_tokens(&body, "points").unwrap_or_else(|| "none".to_string());
-        check_points(attr, &points)?;
+        check_vocabulary(attr, "#[group(...)]", points_rule, &points)?;
         return Ok(Some(AddEdgeTok::Block {
             points,
             line_style: parse_line_style_group(attr, &body)?,
@@ -1290,7 +1540,7 @@ fn parse_add_edge(
         }));
     }
     if let Some(direction) = extract_string_from_tokens(stripped, "add_edge") {
-        check_points(attr, &direction)?;
+        check_vocabulary(attr, "#[group(...)]", points_rule, &direction)?;
         return Ok(Some(AddEdgeTok::Direction(direction)));
     }
     Ok(None)
@@ -1301,6 +1551,15 @@ fn parse_add_edge(
 fn quote_opt_string(v: &Option<String>) -> proc_macro2::TokenStream {
     match v {
         Some(s) => quote! { Some(#s.to_string()) },
+        None => quote! { None },
+    }
+}
+
+/// Quote an optional string as an `Option<&str>` argument, for the builder
+/// methods that take borrowed selectors.
+fn quote_opt_str_ref(v: &Option<String>) -> proc_macro2::TokenStream {
+    match v {
+        Some(s) => quote! { Some(#s) },
         None => quote! { None },
     }
 }
@@ -1422,6 +1681,37 @@ fn quote_border_style(bs: &Option<BorderStyleTok>) -> proc_macro2::TokenStream {
     }
 }
 
+fn quote_placement(p: &str) -> proc_macro2::TokenStream {
+    match p {
+        "badge" => quote! { spytial::spytial_annotations::IconPlacement::Badge },
+        _ => quote! { spytial::spytial_annotations::IconPlacement::Full },
+    }
+}
+
+fn quote_icon_style(is: &Option<IconStyleTok>) -> proc_macro2::TokenStream {
+    match is {
+        None => quote! { None },
+        Some(is) => {
+            let path = quote_opt_string(&is.path);
+            let placement = match &is.placement {
+                Some(p) => {
+                    let tok = quote_placement(p);
+                    quote! { Some(#tok) }
+                }
+                None => quote! { None },
+            };
+            let opacity = quote_opt_f64(is.opacity);
+            quote! {
+                Some(spytial::spytial_annotations::IconStyle {
+                    path: #path,
+                    placement: #placement,
+                    opacity: #opacity,
+                })
+            }
+        }
+    }
+}
+
 fn quote_fill_style(fs: &Option<FillStyleTok>) -> proc_macro2::TokenStream {
     match fs {
         None => quote! { None },
@@ -1522,6 +1812,55 @@ fn key_value_starts(chars: &[char], key: &str) -> Vec<usize> {
 fn has_key(tokens: &str, key: &str) -> bool {
     let chars: Vec<char> = tokens.chars().collect();
     !key_value_starts(&chars, key).is_empty()
+}
+
+/// Every key written at depth 0 of `tokens`, in order — both the `key = value`
+/// and the `key(...)` group forms.
+///
+/// Used to reject unknown leaves inside a style block. `validate_known_keys`
+/// can't do that job: it walks `syn`'s meta tree, which only reaches an
+/// attribute's top level, so a typo nested inside `line_style(...)` was
+/// previously invisible. This scan is literal-aware like every other one here,
+/// so a `key =` written *inside* a selector string is content, not a key.
+fn top_level_keys(tokens: &str) -> Vec<String> {
+    let chars: Vec<char> = tokens.chars().collect();
+    let mut keys = Vec::new();
+    let mut depth = 0usize;
+    let mut i = 0usize;
+    while i < chars.len() {
+        if let Some(end) = string_literal_end(&chars, i) {
+            i = end;
+            continue;
+        }
+        match chars[i] {
+            '(' => {
+                depth += 1;
+                i += 1;
+            }
+            ')' => {
+                depth = depth.saturating_sub(1);
+                i += 1;
+            }
+            c if depth == 0 && (c.is_alphabetic() || c == '_') => {
+                let start = i;
+                while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                    i += 1;
+                }
+                let ident: String = chars[start..i].iter().collect();
+                let mut j = i;
+                while j < chars.len() && chars[j].is_whitespace() {
+                    j += 1;
+                }
+                // Only an identifier followed by `=` or `(` is a key; a bare
+                // word is a value (`negated = true`, an array item, …).
+                if matches!(chars.get(j), Some('=') | Some('(')) {
+                    keys.push(ident);
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    keys
 }
 
 /// The bare (unquoted) value token at `start`: everything up to the next

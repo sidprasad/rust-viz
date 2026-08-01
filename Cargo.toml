@@ -19,6 +19,8 @@ exclude = [
     ".github/",
     "docs/",
     "eval-corpus/",
+    "spec-codegen/",
+    "scripts/",
 ]
 
 [dependencies]

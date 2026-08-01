@@ -11,7 +11,7 @@ pub use runtime::{
     get_type_decorators, register_type_decorators, to_yaml, AlignConstraint, AlignParams,
     BorderStyle, Constraint, CyclicConstraint, CyclicParams, DecoProbe, DefaultDecorators,
     Directive, DrawEnd, FillStyle, GroupConstraint, GroupEdge, GroupEdgePoints, GroupEdgeValue,
-    GroupParams, HasSpytialDecorators, InferredEdgeDraw, LinePattern, LineStyle,
-    OrientationConstraint, OrientationParams, SpytialDecorators, SpytialDecoratorsBuilder,
-    TextSize, TextStyle,
+    GroupParams, HasSpytialDecorators, IconPlacement, IconStyle, InferredEdgeDraw, LinePattern,
+    LineStyle, OrientationConstraint, OrientationParams, SpytialDecorators,
+    SpytialDecoratorsBuilder, TextSize, TextStyle,
 };

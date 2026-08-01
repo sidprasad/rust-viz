@@ -1,0 +1,18 @@
+# Its own workspace root, deliberately, for the same reason `eval-corpus` is:
+# neither `spytial` nor `spytial_export_macros` may depend on this crate in any
+# way, not even as a dev-dependency, so building or packaging them never needs
+# this directory. The arrow points one way only — this crate reads the vendored
+# manifest and writes `macros/src/spec_tables.rs`, which is checked in.
+[workspace]
+
+[package]
+name = "spytial-spec-codegen"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.80"
+description = "Generates the derive macro's spec tables from spytial-core's spytial-language.json. Not published."
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+serde_json = "1.0"

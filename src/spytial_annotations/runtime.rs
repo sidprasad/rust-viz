@@ -65,12 +65,8 @@ pub enum Directive {
     AtomStyle(AtomStyleDirective),
     /// Set explicit atom dimensions.
     Size(SizeDirective),
-    /// Render atoms as an image icon.
-    Icon(IconDirective),
     /// Style edges (line, label, visibility).
     EdgeStyle(EdgeStyleDirective),
-    /// Project atoms of a given signature out of the main view.
-    Projection(ProjectionDirective),
     /// Promote a relation to an inline attribute label on its source atom.
     Attribute(AttributeDirective),
     /// Hide a field/relation from the diagram entirely.
@@ -325,6 +321,41 @@ pub struct FillStyle {
     pub color: Option<String>,
 }
 
+/// Where an atom's icon sits (`iconStyle.placement`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum IconPlacement {
+    /// The icon occupies the box, which stays transparent unless a
+    /// `fillStyle.color` is given. The default.
+    Full,
+    /// A small marker in the top-right corner, secondary to the label.
+    Badge,
+}
+
+/// Sparse styling of an atom's icon (`iconStyle` block, spytial-core 4.2).
+///
+/// Every leaf is optional, `path` included, so a supertype rule can supply the
+/// icon and a subtype rule tune only its opacity. An `iconStyle` with no path
+/// draws nothing.
+///
+/// This block plus [`AtomStyleParams::show_label`] replace the old `icon`
+/// directive, whose single `showLabels` boolean drove label visibility and icon
+/// geometry at once. Splitting them is what makes a faded watermark — or a
+/// hidden label with no icon — expressible.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct IconStyle {
+    /// A bundled icon name (`person`), an icon-pack reference
+    /// (`bi:person-fill`), a URL, or a path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Where the icon sits relative to the label.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub placement: Option<IconPlacement>,
+    /// Alpha in `[0, 1]`. Out-of-range values are dropped rather than clamped.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opacity: Option<f64>,
+}
+
 /// Block form of a selector-group's `addEdge`: the connector's direction
 /// (`points` — the same key the YAML uses) plus its line and label styling.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -396,9 +427,17 @@ pub struct AtomStyleParams {
     /// Border styling.
     #[serde(rename = "borderStyle", skip_serializing_if = "Option::is_none")]
     pub border_style: Option<BorderStyle>,
+    /// Icon styling (spytial-core 4.2).
+    #[serde(rename = "iconStyle", skip_serializing_if = "Option::is_none")]
+    pub icon_style: Option<IconStyle>,
     /// Label styling.
     #[serde(rename = "textStyle", skip_serializing_if = "Option::is_none")]
     pub text_style: Option<TextStyle>,
+    /// Whether the atom's own label is drawn (spytial-core 4.2; default `true`).
+    /// Independent of [`IconStyle::placement`], unlike the `icon` directive's
+    /// old `showLabels`.
+    #[serde(rename = "showLabel", skip_serializing_if = "Option::is_none")]
+    pub show_label: Option<bool>,
 }
 
 /// Wire-format wrapper for a `size:` directive.
@@ -417,25 +456,6 @@ pub struct SizeParams {
     pub height: u32,
     /// Width in diagram units.
     pub width: u32,
-}
-
-/// Wire-format wrapper for an `icon:` directive.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct IconDirective {
-    /// Inner icon parameters (selector, image path, label flag).
-    pub icon: IconParams,
-}
-
-/// Parameters of an [`IconDirective`].
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct IconParams {
-    /// Selector identifying the atoms to render as icons.
-    pub selector: String,
-    /// Path or URL to the icon image.
-    pub path: String,
-    /// Whether to keep the atom label visible alongside the icon.
-    #[serde(rename = "showLabels")]
-    pub show_labels: bool,
 }
 
 /// `EdgeStyleDirective` is the canonical edge-styling directive (spytial-core
@@ -478,20 +498,6 @@ pub struct EdgeStyleParams {
     pub hidden: Option<bool>,
 }
 
-/// Wire-format wrapper for a `projection:` directive.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProjectionDirective {
-    /// Inner projection parameters.
-    pub projection: ProjectionParams,
-}
-
-/// Parameters of a [`ProjectionDirective`].
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProjectionParams {
-    /// Signature/type name to project out of the main view.
-    pub sig: String,
-}
-
 /// Wire-format wrapper for an `attribute:` directive.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AttributeDirective {
@@ -507,6 +513,9 @@ pub struct AttributeParams {
     /// Optional selector restricting where the attribute is shown.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selector: Option<String>,
+    /// Optional value filter restricting which tuples are shown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
     /// Styling for this attribute's line on the node (spytial-core 3.1).
     #[serde(rename = "textStyle", skip_serializing_if = "Option::is_none")]
     pub text_style: Option<TextStyle>,
@@ -528,6 +537,9 @@ pub struct HideFieldParams {
     /// Optional selector restricting where the field is hidden.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selector: Option<String>,
+    /// Optional value filter restricting which tuples are hidden.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
 }
 
 /// Wire-format wrapper for a `hideAtom:` directive.
@@ -911,12 +923,15 @@ impl SpytialDecoratorsBuilder {
     }
 
     /// Push an [`AtomStyleDirective`] onto the builder (spytial-core 3.0).
+    #[allow(clippy::too_many_arguments)]
     pub fn atom_style(
         mut self,
         selector: Option<&str>,
         fill_style: Option<FillStyle>,
         border_style: Option<BorderStyle>,
+        icon_style: Option<IconStyle>,
         text_style: Option<TextStyle>,
+        show_label: Option<bool>,
     ) -> Self {
         self.directives
             .push(Directive::AtomStyle(AtomStyleDirective {
@@ -924,7 +939,9 @@ impl SpytialDecoratorsBuilder {
                     selector: selector.map(|s| s.to_string()),
                     fill_style,
                     border_style,
+                    icon_style,
                     text_style,
+                    show_label,
                 },
             }));
         self
@@ -944,6 +961,8 @@ impl SpytialDecoratorsBuilder {
                 width: None,
             }),
             None,
+            None,
+            None,
         )
     }
 
@@ -959,16 +978,32 @@ impl SpytialDecoratorsBuilder {
         self
     }
 
-    /// Push an [`IconDirective`] onto the builder.
-    pub fn icon(mut self, selector: &str, path: &str, show_labels: bool) -> Self {
-        self.directives.push(Directive::Icon(IconDirective {
-            icon: IconParams {
-                selector: selector.to_string(),
-                path: path.to_string(),
-                show_labels,
-            },
-        }));
-        self
+    /// Push the legacy `icon` form onto the builder.
+    ///
+    /// Rewrites to an [`AtomStyleDirective`], which is the mapping spytial-core
+    /// 4.2 documents when it deprecated `icon`: the single `showLabels` boolean
+    /// drove label visibility and icon geometry at once, so it splits into an
+    /// independent [`IconStyle::placement`] and [`AtomStyleParams::show_label`]
+    /// — `showLabels: true` becomes a `badge` beside a visible label, and
+    /// `showLabels: false` becomes a `full` icon with the label off. Prefer
+    /// [`Self::atom_style`].
+    pub fn icon(self, selector: &str, path: &str, show_labels: bool) -> Self {
+        self.atom_style(
+            Some(selector),
+            None,
+            None,
+            Some(IconStyle {
+                path: Some(path.to_string()),
+                placement: Some(if show_labels {
+                    IconPlacement::Badge
+                } else {
+                    IconPlacement::Full
+                }),
+                opacity: None,
+            }),
+            None,
+            Some(show_labels),
+        )
     }
 
     /// Push an [`EdgeStyleDirective`] onto the builder (spytial-core 3.0).
@@ -1040,20 +1075,9 @@ impl SpytialDecoratorsBuilder {
         )
     }
 
-    /// Push a [`ProjectionDirective`] onto the builder.
-    pub fn projection(mut self, sig: &str) -> Self {
-        self.directives
-            .push(Directive::Projection(ProjectionDirective {
-                projection: ProjectionParams {
-                    sig: sig.to_string(),
-                },
-            }));
-        self
-    }
-
     /// Push an [`AttributeDirective`] onto the builder.
     pub fn attribute(self, field: &str, selector: Option<&str>) -> Self {
-        self.attribute_styled(field, selector, None)
+        self.attribute_styled(field, selector, None, None)
     }
 
     /// Push an [`AttributeDirective`] with label styling (spytial-core 3.1)
@@ -1062,6 +1086,7 @@ impl SpytialDecoratorsBuilder {
         mut self,
         field: &str,
         selector: Option<&str>,
+        filter: Option<&str>,
         text_style: Option<TextStyle>,
     ) -> Self {
         self.directives
@@ -1069,6 +1094,7 @@ impl SpytialDecoratorsBuilder {
                 attribute: AttributeParams {
                     field: field.to_string(),
                     selector: selector.map(|s| s.to_string()),
+                    filter: filter.map(|s| s.to_string()),
                     text_style,
                 },
             }));
@@ -1076,12 +1102,13 @@ impl SpytialDecoratorsBuilder {
     }
 
     /// Push a [`HideFieldDirective`] onto the builder.
-    pub fn hide_field(mut self, field: &str, selector: Option<&str>) -> Self {
+    pub fn hide_field(mut self, field: &str, selector: Option<&str>, filter: Option<&str>) -> Self {
         self.directives
             .push(Directive::HideField(HideFieldDirective {
                 hide_field: HideFieldParams {
                     field: field.to_string(),
                     selector: selector.map(|s| s.to_string()),
+                    filter: filter.map(|s| s.to_string()),
                 },
             }));
         self
