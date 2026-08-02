@@ -39,6 +39,12 @@ jobs:
       - name: Run doc tests
         run: cargo test --doc
 
+      # `macros` is a path dependency, not a workspace member, so the runs above
+      # do not reach it and `--workspace` would not help. `--lib` only: its doc
+      # example needs `spytial`, which it cannot depend on without a cycle.
+      - name: Run derive-macro unit tests
+        run: cargo test --manifest-path macros/Cargo.toml --lib
+
       # Its own workspace, so the run above does not reach it.
       - name: Run eval-corpus tests
         run: cargo test --manifest-path eval-corpus/Cargo.toml

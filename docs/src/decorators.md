@@ -184,6 +184,25 @@ filled look), and `edge_style`'s `value`/`style`/`weight` become
 `line_style`'s `color`/`pattern`/`weight`. Mixing flat keys and blocks in one
 `edge_style` is a compile error.
 
+**Deprecation warnings:** every form spytial-core has deprecated now warns at
+compile time, naming the replacement and how the fields map across. That covers
+whole attributes (`#[atom_color]`, `#[icon]`) and single shapes of attributes
+that are otherwise current — `#[group(field = ...)]` warns while
+`#[group(selector = ...)]` does not, and `#[edge_style(value = ...)]` warns
+while `#[edge_style(field = ..., line_style(...))]` does not. Nothing stops
+compiling; the deprecated forms still work exactly as before. To keep one
+deliberately, put `#[allow(deprecated)]` on the type:
+
+```rust,ignore
+#[derive(Serialize, SpytialDecorators)]
+#[allow(deprecated)]
+#[atom_color(selector = "Node", value = "red")]
+struct Node { /* ... */ }
+```
+
+The warning text comes from spytial-core's own language manifest, so it moves
+when upstream's does.
+
 > **Breaking in spytial-core 3.0:** two style rules that set the same property
 > of the same edge/atom to *different* values now raise a
 > `StyleCollisionError` at render time (2.x silently kept the first). Set each

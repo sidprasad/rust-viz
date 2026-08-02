@@ -1,11 +1,12 @@
 use proc_macro::TokenStream;
-use quote::quote;
+use quote::{quote, quote_spanned};
 use syn::{
-    parse_macro_input, Attribute, Data, DeriveInput, Fields, GenericArgument, PathArguments, Type,
+    parse_macro_input, spanned::Spanned, Attribute, Data, DeriveInput, Fields, GenericArgument,
+    PathArguments, Type,
 };
 
 mod spec_tables;
-use spec_tables::FieldRule;
+use spec_tables::{DeprecationSpec, FieldRule};
 
 /// Emit a decorator-probe call for each distinct user type reachable through
 /// this type's fields (looking through containers like `Vec`/`Option`/`Box`).
@@ -176,12 +177,37 @@ pub fn derive_spytial_decorators(input: TokenStream) -> TokenStream {
 
     // Parse spatial annotation attributes for this type
     let mut decorator_calls = Vec::new();
+    let mut deprecation_shims = Vec::new();
+
+    // Suppressing lint attributes the user wrote on the type, copied onto every
+    // deprecation shim below.
+    //
+    // A shim is a sibling item of the struct, not part of it, so a plain
+    // `#[allow(deprecated)]` on the struct does not reach it — without this the
+    // only way to quiet one legacy attribute would be `#![allow(deprecated)]`
+    // over the whole module, which also hides every unrelated deprecation in
+    // it. Escalation needs no help: a module- or crate-level `deny` already
+    // covers the shim, because the module *is* its lint parent.
+    let lint_attrs: Vec<&Attribute> = input
+        .attrs
+        .iter()
+        .filter(|a| a.path().is_ident("allow") || a.path().is_ident("expect"))
+        .collect();
 
     for attr in &input.attrs {
         let parsed = match parse_spatial_attribute(attr) {
             Ok(parsed) => parsed,
             Err(err) => return err.to_compile_error().into(),
         };
+        // Only after a clean parse: a malformed attribute should report the
+        // error it has, not a deprecation notice on top of it.
+        if parsed.is_some() {
+            if let Some(name) = attr.path().get_ident().map(|i| i.to_string()) {
+                if let Some(shim) = deprecation_shim(attr, &name) {
+                    deprecation_shims.push(quote! { #(#lint_attrs)* #shim });
+                }
+            }
+        }
         match parsed {
             Some(SpatialAttribute::Attribute {
                 field,
@@ -428,6 +454,8 @@ pub fn derive_spytial_decorators(input: TokenStream) -> TokenStream {
 
     // Generate the HasSpytialDecorators implementation
     let expanded = quote! {
+        #(#deprecation_shims)*
+
         impl #impl_generics spytial::spytial_annotations::HasSpytialDecorators for #name #ty_generics #where_clause {
             fn decorators() -> spytial::spytial_annotations::SpytialDecorators {
                 // Register this type automatically when decorators() is called
@@ -594,6 +622,92 @@ fn parse_spatial_attribute(attr: &Attribute) -> Result<Option<SpatialAttribute>,
     } else {
         Ok(None)
     }
+}
+
+/// The deprecation that applies to this attribute *as written*, and the key
+/// that selected it.
+///
+/// A shape-scoped entry only fires when one of its keys is actually present.
+/// That is the whole point: `#[group(field = ...)]` is the deprecated form and
+/// `#[group(selector = ...)]` is the current one, so keying the warning on the
+/// attribute name alone would condemn both. Keys are read from the
+/// group-stripped token string for the same reason the parsers do — a `value`
+/// inside `line_style(...)` is not the legacy top-level `value`.
+fn deprecation_for(
+    attr: &Attribute,
+    attr_name: &str,
+) -> Option<(&'static DeprecationSpec, Option<&'static str>)> {
+    let stripped = attr
+        .meta
+        .require_list()
+        .ok()
+        .map(|meta| strip_groups(&meta.tokens.to_string()));
+
+    spec_tables::DEPRECATIONS.iter().find_map(|dep| {
+        if dep.attr != attr_name {
+            return None;
+        }
+        if dep.when_any_key.is_empty() {
+            return Some((dep, None));
+        }
+        let tokens = stripped.as_deref()?;
+        dep.when_any_key
+            .iter()
+            .find(|key| has_key(tokens, key))
+            .map(|key| (dep, Some(*key)))
+    })
+}
+
+/// An item that makes rustc emit a deprecation warning pointing at `attr`.
+///
+/// Proc macros cannot raise warnings directly on stable, so the expansion
+/// carries a `#[deprecated]` type and immediately uses it. Every token is
+/// spanned to the user's attribute, which is what puts the diagnostic on their
+/// `#[icon(...)]` rather than somewhere inside generated code.
+///
+/// The marker's name is part of the diagnostic — rustc prints "use of
+/// deprecated struct `_::icon_is_deprecated`" ahead of the note — so it is
+/// spelled to read as a sentence. Each shim gets its own anonymous const, so
+/// two identical deprecated attributes on one struct do not collide.
+fn deprecation_shim(attr: &Attribute, attr_name: &str) -> Option<proc_macro2::TokenStream> {
+    let (dep, matched) = deprecation_for(attr, attr_name)?;
+
+    let form = match matched {
+        Some(key) => format!("`#[{}({key} = ...)]`", dep.attr),
+        None => format!("`#[{}]`", dep.attr),
+    };
+    // A deprecated *shape* is replaced by another shape of the same attribute,
+    // so "use `#[group]`" would read as a no-op. Name the form instead.
+    let replacement = if dep.attr == dep.replaced_by {
+        format!("use the current form of `#[{}]`", dep.replaced_by)
+    } else {
+        format!("use `#[{}]`", dep.replaced_by)
+    };
+    let note = format!(
+        "{form} is deprecated in spytial-core {}; {replacement}. {}",
+        spec_tables::SPYTIAL_CORE_VERSION,
+        dep.note,
+    );
+
+    let span = attr.span();
+    let marker = syn::Ident::new(
+        &match matched {
+            Some(key) => format!("{}_{key}_form_is_deprecated", dep.attr),
+            None => format!("{}_is_deprecated", dep.attr),
+        },
+        span,
+    );
+    Some(quote_spanned! {span=>
+        const _: () = {
+            #[deprecated(note = #note)]
+            #[allow(non_camel_case_types)]
+            struct #marker;
+            // The use site. `allow(dead_code)` because nothing calls it — the
+            // reference in the signature is the entire point.
+            #[allow(dead_code)]
+            fn probe(_: #marker) {}
+        };
+    })
 }
 
 /// The generated spec for `attr_name`.
@@ -2189,4 +2303,160 @@ fn extract_array_from_tokens(tokens: &str, key: &str) -> Option<Vec<String>> {
         }
         Some(items)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use syn::parse_quote;
+
+    fn dep_for(
+        attr: Attribute,
+        name: &str,
+    ) -> Option<(&'static DeprecationSpec, Option<&'static str>)> {
+        deprecation_for(&attr, name)
+    }
+
+    /// One attribute, two shapes, one of them deprecated. Keying the warning on
+    /// the attribute name alone would condemn the current form too.
+    #[test]
+    fn only_the_deprecated_group_shape_warns() {
+        let (dep, key) = dep_for(
+            parse_quote!(#[group(field = "rel", group_on = 1, add_to_group = 0)]),
+            "group",
+        )
+        .expect("the field-based group is deprecated upstream");
+        assert_eq!(key, Some("field"));
+        assert_eq!(dep.replaced_by, "group");
+
+        assert!(
+            dep_for(
+                parse_quote!(#[group(selector = "Team.members", name = "Team")]),
+                "group"
+            )
+            .is_none(),
+            "the selector-based group is the current form and must stay quiet",
+        );
+    }
+
+    /// `icon` and `atom_color` are deprecated outright — every spelling warns.
+    #[test]
+    fn wholly_deprecated_attributes_warn_on_any_spelling() {
+        for attr in [
+            parse_quote!(#[icon(path = "a.svg")]),
+            parse_quote!(#[icon(selector = "P", path = "a.svg", show_labels = true)]),
+        ] {
+            let (dep, key) = dep_for(attr, "icon").expect("icon is deprecated");
+            assert_eq!(
+                key, None,
+                "no key selects it; the attribute itself is deprecated"
+            );
+            assert_eq!(dep.replaced_by, "atom_style");
+        }
+
+        let (dep, _) = dep_for(
+            parse_quote!(#[atom_color(selector = "N", value = "red")]),
+            "atom_color",
+        )
+        .expect("atom_color is deprecated");
+        assert_eq!(dep.replaced_by, "atom_style");
+    }
+
+    /// The legacy flat trio warns; the block form it was replaced by does not.
+    #[test]
+    fn legacy_edge_keys_warn_but_the_block_form_does_not() {
+        for (attr, expected) in [
+            (
+                parse_quote!(#[edge_style(field = "n", value = "blue")]),
+                "value",
+            ),
+            (
+                parse_quote!(#[edge_style(field = "n", style = "dotted")]),
+                "style",
+            ),
+            (
+                parse_quote!(#[edge_style(field = "n", weight = 2.0)]),
+                "weight",
+            ),
+        ] {
+            let (_, key) = dep_for(attr, "edge_style").expect("legacy flat keys are deprecated");
+            assert_eq!(key, Some(expected));
+        }
+
+        assert!(
+            dep_for(
+                parse_quote!(#[edge_style(field = "n", line_style(color = "blue"))]),
+                "edge_style"
+            )
+            .is_none(),
+            "the block form is current",
+        );
+    }
+
+    /// A legacy key name appearing *inside* a style block is not a legacy key.
+    /// Without the group-stripping this would warn on the current form.
+    #[test]
+    fn a_leaf_inside_a_block_is_not_a_top_level_legacy_key() {
+        assert!(
+            dep_for(
+                parse_quote!(#[edge_style(field = "n", line_style(weight = 2.0, pattern = "dotted"))]),
+                "edge_style"
+            )
+            .is_none(),
+            "`weight` inside line_style(...) is the block's leaf, not the legacy flat key",
+        );
+    }
+
+    /// The expansion has to be an actual `#[deprecated]` item carrying the
+    /// manifest's note — that item is the only reason rustc says anything.
+    #[test]
+    fn the_shim_is_a_deprecated_item_carrying_the_note() {
+        let attr: Attribute = parse_quote!(#[icon(path = "a.svg")]);
+        let shim = deprecation_shim(&attr, "icon")
+            .expect("icon is deprecated")
+            .to_string();
+
+        assert!(
+            shim.contains("deprecated"),
+            "not a deprecation shim:\n{shim}"
+        );
+        assert!(
+            shim.contains("icon_is_deprecated"),
+            "marker name is part of the diagnostic:\n{shim}"
+        );
+        assert!(
+            shim.contains("atom_style"),
+            "the note must name the replacement:\n{shim}"
+        );
+        assert!(
+            shim.contains(spec_tables::SPYTIAL_CORE_VERSION),
+            "the note must say which spytial-core deprecated it:\n{shim}",
+        );
+    }
+
+    /// A `when_any_key` naming a key the attribute does not accept, or a
+    /// `replaced_by` naming an attribute that does not exist, would produce a
+    /// warning that can never fire or that points nowhere. Neither is visible
+    /// at generation time, because both tables are generated independently.
+    #[test]
+    fn every_deprecation_refers_to_keys_and_attributes_that_exist() {
+        for dep in spec_tables::DEPRECATIONS {
+            let spec = spec_tables::attr_spec(dep.attr)
+                .unwrap_or_else(|| panic!("`{}` is not an authoring attribute", dep.attr));
+            for key in dep.when_any_key {
+                assert!(
+                    spec.keys.contains(key),
+                    "#[{}] is said to be deprecated when `{key}` is present, but it does not \
+                     accept that key — the warning could never fire",
+                    dep.attr,
+                );
+            }
+            assert!(
+                spec_tables::attr_spec(dep.replaced_by).is_some(),
+                "#[{}] points at `{}` as its replacement, which is not an authoring attribute",
+                dep.attr,
+                dep.replaced_by,
+            );
+        }
+    }
 }

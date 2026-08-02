@@ -84,6 +84,26 @@ impl AttrSpec {
     }
 }
 
+/// A form spytial-core has deprecated, lowered to what the macro can warn about.
+///
+/// Not the same thing as [`AttrSpec::deprecated_for`]: that says the whole
+/// attribute is deprecated, which is only true when the attribute has exactly
+/// one manifest source. `#[group]` and `#[edge_style]` are current attributes
+/// with one deprecated *shape* each, and the shape is chosen by which keys the
+/// user wrote — so the warning has to be keyed on that, not on the attribute.
+#[derive(Debug)]
+pub struct DeprecationSpec {
+    /// The Rust authoring attribute the warning fires on.
+    pub attr: &'static str,
+    /// Rust keys whose presence selects the deprecated shape. Empty means the
+    /// attribute is deprecated outright, whatever it is written with.
+    pub when_any_key: &'static [&'static str],
+    /// The replacement, spelled as the Rust attribute to reach for.
+    pub replaced_by: &'static str,
+    /// spytial-core's own reason and field mapping, for the warning note.
+    pub note: &'static str,
+}
+
 /// One nested style block, e.g. `line_style(...)`.
 #[derive(Debug)]
 pub struct BlockSpec {
@@ -1118,6 +1138,14 @@ pub static BLOCKS: &[BlockSpec] = &[
             },
         ],
     },
+];
+
+/// Forms spytial-core has deprecated, in the order the manifest lists them.
+pub static DEPRECATIONS: &[DeprecationSpec] = &[
+    DeprecationSpec { attr: "group", when_any_key: &["field"], replaced_by: "group", note: "A binary selector whose first column is the key and whose second is the members says the same thing without tuple indices. Mapping: add_to_group -> selector (column order); field -> selector; group_on -> selector (column order). To migrate: over `worksIn: Employee -> Department`, `groupOn: 1` / `addToGroup: 0` keys on Department, so it becomes `selector: ~worksIn` plus the `name` that form requires." },
+    DeprecationSpec { attr: "icon", when_any_key: &[], replaced_by: "atom_style", note: "The single `showLabels` boolean drove label visibility and icon geometry at once. atomStyle splits those into two independent knobs, which is what makes a faded watermark, or a hidden label with no icon, expressible. Mapping: path -> icon_style.path; show_labels: false -> show_label: false + icon_style.placement: full; show_labels: true -> show_label: true + icon_style.placement: badge." },
+    DeprecationSpec { attr: "atom_color", when_any_key: &[], replaced_by: "atom_style", note: "atomStyle expresses the same recolor and also reaches the fill, the icon, and the label. The rewrite is border-preserving, so an existing diagram is unchanged. Mapping: value -> border_style.color." },
+    DeprecationSpec { attr: "edge_style", when_any_key: &["value", "style", "weight"], replaced_by: "edge_style", note: "edgeStyle groups the same knobs into the shared lineStyle/textStyle blocks that every other form uses. Mapping: highlight -> line_style.highlight; style -> line_style.pattern; value -> line_style.color; weight -> line_style.weight." },
 ];
 
 /// Direction pairs `orientation` rejects together (`above` with `below`,

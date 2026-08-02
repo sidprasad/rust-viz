@@ -231,6 +231,7 @@ fn edge_style_directive_all_options() {
 }
 
 #[derive(Serialize, SpytialDecorators)]
+#[allow(deprecated)]
 #[edge_style(
     field = "legacy_edge",
     value = "seagreen",
@@ -498,6 +499,7 @@ fn raw_selector_keeps_its_own_whitespace() {
 }
 
 #[derive(Serialize, SpytialDecorators)]
+#[allow(deprecated)]
 #[atom_color(selector = "Legacy", value = "crimson")]
 struct AtomColorLegacy {
     id: u32,
@@ -710,7 +712,9 @@ fn tag_directive_multiple() {
 #[align(selector = "Person", direction = "horizontal", negated = true)]
 #[cyclic(selector = "next", direction = "clockwise", negated = true)]
 #[group(selector = "Foo", name = "fooGroup", negated = true)]
-#[allow(clippy::duplicated_attributes)]
+// The field-based group is deprecated upstream, but `hold: never` has to keep
+// working on both group shapes, so this one stays.
+#[allow(clippy::duplicated_attributes, deprecated)]
 #[group(field = "rel", group_on = 0, add_to_group = 1, negated = true)]
 struct AllNegated {
     id: u32,
@@ -896,6 +900,7 @@ fn atom_style_carries_icon_style_and_show_label() {
 }
 
 #[derive(Serialize, SpytialDecorators)]
+#[allow(deprecated)]
 #[icon(selector = "Person", path = "person.png", show_labels = true)]
 struct LegacyIcon {
     name: String,
@@ -995,6 +1000,7 @@ fn cyclic_defaults_to_the_manifest_direction() {
 }
 
 #[derive(Serialize, SpytialDecorators)]
+#[allow(deprecated)]
 #[icon(selector = "Person", path = "person.png")]
 struct BareLegacyIcon {
     name: String,
