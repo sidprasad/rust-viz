@@ -105,3 +105,104 @@ fn macro_attributes_and_generated_specs_agree() {
         );
     }
 }
+
+/// Which wire section each form is emitted in must match the manifest.
+///
+/// Rust users never see this split — they write `#[size(...)]` and the crate
+/// decides — which is exactly why it drifted unnoticed: `size` and `hideAtom`
+/// were emitted among the directives, a placement spytial-core still parses but
+/// marks deprecated. Nothing in the authoring surface or the generated tables
+/// could catch it, because the section is a property of the runtime enums.
+#[test]
+fn wire_sections_match_the_manifest() {
+    let runtime = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("src")
+            .join("spytial_annotations")
+            .join("runtime.rs"),
+    )
+    .expect("runtime.rs is readable");
+
+    // The variants of `enum Constraint` / `enum Directive`, by wrapper type.
+    let variants = |enum_name: &str| -> Vec<String> {
+        let start = runtime
+            .find(&format!("pub enum {enum_name} {{"))
+            .unwrap_or_else(|| panic!("runtime.rs declares `enum {enum_name}`"));
+        let body = &runtime[start..];
+        let end = body.find("\n}").expect("enum is closed");
+        body[..end]
+            .lines()
+            .filter_map(|l| {
+                let l = l.trim();
+                let open = l.find('(')?;
+                let name = l[..open].trim();
+                name.chars()
+                    .next()
+                    .filter(|c| c.is_ascii_uppercase())
+                    .map(|_| name.to_string())
+            })
+            .collect()
+    };
+
+    let constraints = variants("Constraint");
+    let directives = variants("Directive");
+    assert!(
+        !constraints.is_empty() && !directives.is_empty(),
+        "failed to parse the runtime enums"
+    );
+
+    let manifest = vendored_manifest().expect("manifest readable");
+    let value: serde_json::Value = serde_json::from_str(&manifest).expect("valid JSON");
+
+    // Manifest item id -> the Rust variant that emits it. Only forms the
+    // runtime has a wire type for; legacy authoring forms (atomColor, icon,
+    // edgeColor) desugar onto another variant and have none of their own.
+    let emitted_by = [
+        ("orientation", "Orientation"),
+        ("cyclic", "Cyclic"),
+        ("align", "Align"),
+        ("group", "Group"),
+        ("size", "Size"),
+        ("hideAtom", "HideAtom"),
+        ("flag", "Flag"),
+        ("atomStyle", "AtomStyle"),
+        ("edgeStyle", "EdgeStyle"),
+        ("attribute", "Attribute"),
+        ("tag", "Tag"),
+        ("hideField", "HideField"),
+        ("inferredEdge", "InferredEdge"),
+    ];
+
+    for (item_id, variant) in emitted_by {
+        let item = value["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .find(|i| i["id"].as_str() == Some(item_id))
+            .unwrap_or_else(|| panic!("manifest has no item `{item_id}`"));
+        let sections: Vec<&str> = item["sections"]
+            .as_array()
+            .map(|a| a.iter().filter_map(serde_json::Value::as_str).collect())
+            .unwrap_or_default();
+
+        let in_constraints = constraints.iter().any(|v| v == variant);
+        let in_directives = directives.iter().any(|v| v == variant);
+        assert!(
+            in_constraints || in_directives,
+            "`{variant}` is in neither Constraint nor Directive in runtime.rs"
+        );
+
+        let actual = if in_constraints {
+            "constraints"
+        } else {
+            "directives"
+        };
+        assert!(
+            sections.contains(&actual),
+            "`{item_id}` is emitted under `{actual}` (Rust variant `{variant}`), but the \
+             manifest says it belongs under {sections:?}.\nspytial-core may still parse the \
+             other placement, but it warns and will drop it in a major release.",
+        );
+    }
+}

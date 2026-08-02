@@ -55,6 +55,10 @@ pub enum Constraint {
     Cyclic(CyclicConstraint),
     /// Cluster atoms into named groups, either by selector or by field.
     Group(GroupConstraint),
+    /// Set explicit atom dimensions.
+    Size(SizeConstraint),
+    /// Hide atoms matching a selector.
+    HideAtom(HideAtomConstraint),
 }
 
 /// A visual or behavioral directive applied to atoms/relations.
@@ -63,16 +67,12 @@ pub enum Constraint {
 pub enum Directive {
     /// Style atoms (border, fill, label).
     AtomStyle(AtomStyleDirective),
-    /// Set explicit atom dimensions.
-    Size(SizeDirective),
     /// Style edges (line, label, visibility).
     EdgeStyle(EdgeStyleDirective),
     /// Promote a relation to an inline attribute label on its source atom.
     Attribute(AttributeDirective),
     /// Hide a field/relation from the diagram entirely.
     HideField(HideFieldDirective),
-    /// Hide atoms matching a selector.
-    HideAtom(HideAtomDirective),
     /// Add a synthesized edge derived from a selector.
     InferredEdge(InferredEdgeDirective),
     /// Tag atoms with a computed attribute value.
@@ -440,14 +440,14 @@ pub struct AtomStyleParams {
     pub show_label: Option<bool>,
 }
 
-/// Wire-format wrapper for a `size:` directive.
+/// Wire-format wrapper for a `size:` constraint.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct SizeDirective {
+pub struct SizeConstraint {
     /// Inner size parameters (selector, dimensions).
     pub size: SizeParams,
 }
 
-/// Parameters of a [`SizeDirective`].
+/// Parameters of a [`SizeConstraint`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SizeParams {
     /// Selector identifying the atoms to resize.
@@ -542,15 +542,15 @@ pub struct HideFieldParams {
     pub filter: Option<String>,
 }
 
-/// Wire-format wrapper for a `hideAtom:` directive.
+/// Wire-format wrapper for a `hideAtom:` constraint.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct HideAtomDirective {
+pub struct HideAtomConstraint {
     /// Inner hide-atom parameters.
     #[serde(rename = "hideAtom")]
     pub hide_atom: HideAtomParams,
 }
 
-/// Parameters of a [`HideAtomDirective`].
+/// Parameters of a [`HideAtomConstraint`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct HideAtomParams {
     /// Selector identifying the atoms to hide.
@@ -966,9 +966,9 @@ impl SpytialDecoratorsBuilder {
         )
     }
 
-    /// Push a [`SizeDirective`] onto the builder.
+    /// Push a [`SizeConstraint`] onto the builder.
     pub fn size(mut self, selector: &str, height: u32, width: u32) -> Self {
-        self.directives.push(Directive::Size(SizeDirective {
+        self.constraints.push(Constraint::Size(SizeConstraint {
             size: SizeParams {
                 selector: selector.to_string(),
                 height,
@@ -1114,13 +1114,14 @@ impl SpytialDecoratorsBuilder {
         self
     }
 
-    /// Push a [`HideAtomDirective`] onto the builder.
+    /// Push a [`HideAtomConstraint`] onto the builder.
     pub fn hide_atom(mut self, selector: &str) -> Self {
-        self.directives.push(Directive::HideAtom(HideAtomDirective {
-            hide_atom: HideAtomParams {
-                selector: selector.to_string(),
-            },
-        }));
+        self.constraints
+            .push(Constraint::HideAtom(HideAtomConstraint {
+                hide_atom: HideAtomParams {
+                    selector: selector.to_string(),
+                },
+            }));
         self
     }
 

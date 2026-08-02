@@ -512,8 +512,8 @@ struct MultiAnnotated {
 fn multiple_annotation_types_all_captured() {
     let decs = MultiAnnotated::decorators();
 
-    assert_eq!(decs.constraints.len(), 2, "orientation + align");
-    assert_eq!(decs.directives.len(), 2, "atom_color + hide_atom");
+    assert_eq!(decs.constraints.len(), 3, "orientation + align + hide_atom");
+    assert_eq!(decs.directives.len(), 1, "atom_color");
 
     assert!(decs
         .constraints
@@ -528,9 +528,9 @@ fn multiple_annotation_types_all_captured() {
         .iter()
         .any(|d| matches!(d, Directive::AtomStyle(_))));
     assert!(decs
-        .directives
+        .constraints
         .iter()
-        .any(|d| matches!(d, Directive::HideAtom(_))));
+        .any(|c| matches!(c, Constraint::HideAtom(_))));
 }
 
 // ──────────────────────────────────────────────

@@ -356,8 +356,8 @@ fn selector_accepts_raw_string_literals() {
         Some("red")
     );
 
-    assert!(decorators.directives.iter().any(|directive| {
-        matches!(directive, Directive::HideAtom(hide) if hide.hide_atom.selector == "Color + u32")
+    assert!(decorators.constraints.iter().any(|constraint| {
+        matches!(constraint, Constraint::HideAtom(hide) if hide.hide_atom.selector == "Color + u32")
     }));
     assert!(decorators.constraints.iter().any(|constraint| {
         matches!(constraint, Constraint::Align(align)
@@ -431,13 +431,13 @@ fn key_text_inside_a_selector_is_not_a_key() {
     // A number: the flat scan matched `width = ` inside the literal, failed to
     // parse `3"}"#`, and silently fell back to the default of 30.
     let size = KeyTextInSelectorSize::decorators()
-        .directives
+        .constraints
         .iter()
-        .find_map(|directive| match directive {
-            Directive::Size(size) => Some(size.size.clone()),
+        .find_map(|constraint| match constraint {
+            Constraint::Size(size) => Some(size.size.clone()),
             _ => None,
         })
-        .expect("size directive");
+        .expect("size constraint");
     assert_eq!(size.height, 77);
     assert_eq!(size.width, 88);
 
@@ -806,6 +806,9 @@ fn positive_constraints_omit_hold_field() {
             Constraint::Align(a) => assert!(!a.align.negated),
             Constraint::Cyclic(c) => assert!(!c.cyclic.negated),
             Constraint::Group(_) => {}
+            // `size` and `hideAtom` accept `hold` syntactically but ignore it,
+            // so they carry no negation to check.
+            Constraint::Size(_) | Constraint::HideAtom(_) => {}
         }
     }
 }

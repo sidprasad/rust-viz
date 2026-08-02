@@ -76,6 +76,17 @@ from spytial-core's own language manifest instead of transcribed by hand:
   defaulted to `true`, which inverted the whole rewrite for a bare `#[icon]`:
   a corner badge with the label on, where the engine draws a full-box icon with
   the label off.
+- **Breaking** (wire format): `size` and `hideAtom` are emitted under
+  `constraints:` rather than `directives:`, which is where the manifest says
+  they belong. spytial-core still parses the directives placement but warns,
+  and drops deprecated forms in a major release. `Directive::Size` and
+  `Directive::HideAtom` are now `Constraint::Size` and `Constraint::HideAtom`,
+  and `SizeDirective`/`HideAtomDirective` are renamed to
+  `SizeConstraint`/`HideAtomConstraint`. The authoring surface is unchanged —
+  `#[size(...)]` and `#[hide_atom(...)]` are written exactly as before, since
+  the constraint/directive split is a wire-format detail Rust users never touch.
+  A new test in `spec-codegen` checks every form's section against the manifest,
+  because nothing in the authoring surface or the generated tables could.
 
 ## [0.3.0] - TBD
 
