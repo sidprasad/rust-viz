@@ -1051,8 +1051,7 @@ fn parse_orientation_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, 
         let tokens = &meta.tokens;
         let token_str = tokens.to_string();
 
-        let selector =
-            extract_string_from_tokens(&token_str, "selector").unwrap_or_else(|| "".to_string());
+        let selector = extract_string_from_tokens(&token_str, "selector").unwrap_or_default();
         // No default: `directions` is required, and the old fallback of
         // ["up", "down"] was outside the vocabulary entirely, so it produced a
         // constraint that matched nothing.
@@ -1097,8 +1096,7 @@ fn parse_group_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::E
             }))
         } else {
             // Selector-based grouping
-            let selector =
-                extract_string_from_tokens(&stripped, "selector").unwrap_or_else(|| "".to_string());
+            let selector = extract_string_from_tokens(&stripped, "selector").unwrap_or_default();
             let name = extract_string_from_tokens(&stripped, "name")
                 .unwrap_or_else(|| "default".to_string());
             let add_edge = parse_add_edge(attr, &token_str, &stripped)?;
@@ -1123,8 +1121,7 @@ fn parse_align_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::E
         let tokens = &meta.tokens;
         let token_str = tokens.to_string();
 
-        let selector =
-            extract_string_from_tokens(&token_str, "selector").unwrap_or_else(|| "".to_string());
+        let selector = extract_string_from_tokens(&token_str, "selector").unwrap_or_default();
         let direction = extract_string_from_tokens(&token_str, "direction")
             .unwrap_or_else(|| "horizontal".to_string());
         check_direction(attr, "align", &direction)?;
@@ -1146,8 +1143,7 @@ fn parse_cyclic_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::
         let tokens = &meta.tokens;
         let token_str = tokens.to_string();
 
-        let selector =
-            extract_string_from_tokens(&token_str, "selector").unwrap_or_else(|| "".to_string());
+        let selector = extract_string_from_tokens(&token_str, "selector").unwrap_or_default();
         // The manifest's own default. The old fallback here was "up", which is
         // not a cycle direction at all — spytial-core would accept it and lay
         // out clockwise regardless.
@@ -1172,8 +1168,7 @@ fn parse_atom_color_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, s
         let tokens = &meta.tokens;
         let token_str = tokens.to_string();
 
-        let selector =
-            extract_string_from_tokens(&token_str, "selector").unwrap_or_else(|| "".to_string());
+        let selector = extract_string_from_tokens(&token_str, "selector").unwrap_or_default();
         let value =
             extract_string_from_tokens(&token_str, "value").unwrap_or_else(|| "blue".to_string());
 
@@ -1189,8 +1184,7 @@ fn parse_size_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::Er
         let tokens = &meta.tokens;
         let token_str = tokens.to_string();
 
-        let selector =
-            extract_string_from_tokens(&token_str, "selector").unwrap_or_else(|| "".to_string());
+        let selector = extract_string_from_tokens(&token_str, "selector").unwrap_or_default();
         let height = extract_number_from_tokens(&token_str, "height").unwrap_or(20);
         let width = extract_number_from_tokens(&token_str, "width").unwrap_or(30);
         // Both are `exclusiveMinimum: 0` upstream; a zero-sized atom is a
@@ -1214,8 +1208,7 @@ fn parse_icon_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::Er
         let tokens = &meta.tokens;
         let token_str = tokens.to_string();
 
-        let selector =
-            extract_string_from_tokens(&token_str, "selector").unwrap_or_else(|| "".to_string());
+        let selector = extract_string_from_tokens(&token_str, "selector").unwrap_or_default();
         let path = extract_string_from_tokens(&token_str, "path")
             .unwrap_or_else(|| "icon.png".to_string());
         // The manifest's default is `false`, not `true`. Getting this backwards
@@ -1369,8 +1362,7 @@ fn parse_hide_atom_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, sy
         let tokens = &meta.tokens;
         let token_str = tokens.to_string();
 
-        let selector =
-            extract_string_from_tokens(&token_str, "selector").unwrap_or_else(|| "".to_string());
+        let selector = extract_string_from_tokens(&token_str, "selector").unwrap_or_default();
 
         Ok(Some(SpatialAttribute::HideAtom { selector }))
     } else {
@@ -1387,8 +1379,7 @@ fn parse_inferred_edge_args(attr: &Attribute) -> Result<Option<SpatialAttribute>
 
         let name =
             extract_string_from_tokens(&stripped, "name").unwrap_or_else(|| "edge".to_string());
-        let selector =
-            extract_string_from_tokens(&stripped, "selector").unwrap_or_else(|| "".to_string());
+        let selector = extract_string_from_tokens(&stripped, "selector").unwrap_or_default();
 
         Ok(Some(SpatialAttribute::InferredEdge {
             name,
