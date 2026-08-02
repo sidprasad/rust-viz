@@ -108,6 +108,55 @@ const FIELD_SKIPS: &[(&str, &str)] = &[
     ("edgeColor", "hidden"),
 ];
 
+/// How to tell a deprecated *shape* apart from a current one, when the manifest
+/// does not say and the two share a Rust attribute.
+///
+/// `group.byField` needs no entry — the manifest gives it a `discriminator`.
+/// `edgeColor` does not have one, because in YAML it is its own key; it is only
+/// a shape here because the Rust attribute merges it into `#[edge_style]`. The
+/// keys below are exactly the legacy flat trio `parse_edge_style_args` reads.
+///
+/// A bare `#[edge_style(field = "x")]` deliberately does *not* list: it carries
+/// no deprecated key, and the legacy path it takes is this crate's own blue
+/// default, not something the user asked for.
+///
+/// (manifest deprecation id, Rust keys whose presence selects the deprecated shape)
+const SHAPE_DISCRIMINATORS: &[(&str, &[&str])] = &[("edgeColor", &["value", "style", "weight"])];
+
+/// Manifest deprecations that cannot reach the Rust authoring surface, and why.
+///
+/// Like [`UNMAPPED_ITEMS`], this exists so silence is never the answer: every
+/// entry in the manifest's `deprecations[]` is either warned about or listed
+/// here. A spytial-core release that deprecates something new fails the build
+/// until someone decides which it is.
+const DEPRECATIONS_NOT_APPLICABLE: &[(&str, &str)] = &[
+    (
+        "size@directives",
+        "a wire-section placement, not an authoring form; the crate emits size \
+         under constraints already",
+    ),
+    (
+        "hideAtom@directives",
+        "likewise a placement; hideAtom is emitted under constraints",
+    ),
+    (
+        "inferredEdge.color",
+        "in FIELD_SKIPS — the macro never accepted the inline key",
+    ),
+    (
+        "inferredEdge.style",
+        "in FIELD_SKIPS — the macro never accepted the inline key",
+    ),
+    (
+        "inferredEdge.weight",
+        "in FIELD_SKIPS — the macro never accepted the inline key",
+    ),
+    (
+        "inferredEdge.highlight",
+        "in FIELD_SKIPS — the macro never accepted the inline key",
+    ),
+];
+
 fn camel_to_snake(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 4);
     for (i, c) in s.chars().enumerate() {
@@ -361,6 +410,26 @@ impl AttrSpec {{
     }}
 }}
 
+/// A form spytial-core has deprecated, lowered to what the macro can warn about.
+///
+/// Not the same thing as [`AttrSpec::deprecated_for`]: that says the whole
+/// attribute is deprecated, which is only true when the attribute has exactly
+/// one manifest source. `#[group]` and `#[edge_style]` are current attributes
+/// with one deprecated *shape* each, and the shape is chosen by which keys the
+/// user wrote — so the warning has to be keyed on that, not on the attribute.
+#[derive(Debug)]
+pub struct DeprecationSpec {{
+    /// The Rust authoring attribute the warning fires on.
+    pub attr: &'static str,
+    /// Rust keys whose presence selects the deprecated shape. Empty means the
+    /// attribute is deprecated outright, whatever it is written with.
+    pub when_any_key: &'static [&'static str],
+    /// The replacement, spelled as the Rust attribute to reach for.
+    pub replaced_by: &'static str,
+    /// spytial-core's own reason and field mapping, for the warning note.
+    pub note: &'static str,
+}}
+
 /// One nested style block, e.g. `line_style(...)`.
 #[derive(Debug)]
 pub struct BlockSpec {{
@@ -499,6 +568,128 @@ pub fn block_spec(block: &str) -> Option<&'static BlockSpec> {{
 
     s.push_str("/// Every nested style block the derive macro accepts.\npub static BLOCKS: &[BlockSpec] = &[\n");
     s.push_str(&block_entries.join("\n"));
+    s.push_str("\n];\n\n");
+
+    // ---- DEPRECATIONS ----
+    //
+    // Generated from the manifest's own `deprecations[]` so the note text moves
+    // when spytial-core's does. Only `kind: "item"` entries can reach the Rust
+    // authoring surface at all; placements and inline fields belong in
+    // DEPRECATIONS_NOT_APPLICABLE with the reason.
+    let no_deps = Vec::new();
+    let deprecations = man["deprecations"].as_array().unwrap_or(&no_deps);
+    let mut dep_entries = Vec::new();
+    for dep in deprecations {
+        let id = dep["id"].as_str().unwrap_or_default();
+        if DEPRECATIONS_NOT_APPLICABLE.iter().any(|(d, _)| *d == id) {
+            continue;
+        }
+        let kind = dep["kind"].as_str().unwrap_or("?");
+        if kind != "item" {
+            return Err(format!(
+                "manifest deprecation `{id}` is a `{kind}`, which the derive macro has no way to \
+                 warn about, and it is not listed in DEPRECATIONS_NOT_APPLICABLE in \
+                 spec-codegen/src/lib.rs."
+            ));
+        }
+
+        let Some((attr, sources)) = ATTR_SOURCES.iter().find(|(_, s)| s.contains(&id)) else {
+            return Err(format!(
+                "manifest deprecates item `{id}`, which no Rust attribute is authored from and \
+                 which is not in DEPRECATIONS_NOT_APPLICABLE in spec-codegen/src/lib.rs."
+            ));
+        };
+        let item = find_item(id)
+            .ok_or_else(|| format!("manifest deprecates `{id}` but describes no such item"))?;
+
+        // Which keys select the deprecated shape. The manifest's own
+        // discriminator wins; SHAPE_DISCRIMINATORS covers the case where a Rust
+        // attribute merges sources that YAML keeps apart.
+        let when: Vec<String> = match item["discriminator"].as_object() {
+            Some(d) if d.get("present").and_then(Value::as_bool) == Some(true) => {
+                let field = d.get("field").and_then(Value::as_str).unwrap_or_default();
+                vec![rust_key(id, field)]
+            }
+            Some(_) => Vec::new(),
+            None => match SHAPE_DISCRIMINATORS.iter().find(|(d, _)| *d == id) {
+                Some((_, keys)) => keys.iter().map(|k| (*k).to_string()).collect(),
+                // Sole source: the whole attribute is deprecated.
+                None if sources.len() == 1 => Vec::new(),
+                None => {
+                    return Err(format!(
+                        "manifest deprecates `{id}`, which shares #[{attr}] with {} other manifest \
+                         item(s), but neither the manifest nor SHAPE_DISCRIMINATORS says which keys \
+                         select it. Warning unconditionally would fire on the current form too.",
+                        sources.len() - 1,
+                    ))
+                }
+            },
+        };
+
+        let replaced_id = dep["replacedBy"].as_str().unwrap_or_default();
+        let replaced_by = ATTR_SOURCES
+            .iter()
+            .find(|(_, s)| s.contains(&replaced_id))
+            .map(|(a, _)| *a)
+            .ok_or_else(|| {
+                format!(
+                    "manifest says `{id}` is replaced by `{replaced_id}`, which no Rust attribute \
+                     is authored from — the warning would name something the user cannot write."
+                )
+            })?;
+
+        // Reason, then the field mapping in Rust spelling. Identity entries
+        // (`selector` -> `selector`) carry nothing and are dropped.
+        let mut note = dep["reason"].as_str().unwrap_or_default().to_string();
+        let mapping: Vec<String> = dep["mapping"]
+            .as_object()
+            .map(|m| {
+                m.iter()
+                    .map(|(k, v)| {
+                        (
+                            camel_to_snake(k),
+                            camel_to_snake(v.as_str().unwrap_or_default()),
+                        )
+                    })
+                    .filter(|(k, v)| k != v)
+                    .map(|(k, v)| format!("{k} -> {v}"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !mapping.is_empty() {
+            note.push_str(&format!(" Mapping: {}.", mapping.join("; ")));
+        }
+        if let Some(extra) = item["note"].as_str() {
+            note.push(' ');
+            note.push_str(extra);
+        }
+
+        let when_lits: Vec<String> = when.iter().map(|k| format!("{k:?}")).collect();
+        dep_entries.push(format!(
+            "    DeprecationSpec {{ attr: {:?}, when_any_key: &[{}], replaced_by: {:?}, note: {:?} }},",
+            attr,
+            when_lits.join(", "),
+            replaced_by,
+            note,
+        ));
+    }
+
+    // A stale exemption is as bad as a missing one: it means the policy table
+    // still excuses something the manifest no longer says.
+    for (id, _) in DEPRECATIONS_NOT_APPLICABLE {
+        if !deprecations.iter().any(|d| d["id"].as_str() == Some(*id)) {
+            return Err(format!(
+                "DEPRECATIONS_NOT_APPLICABLE in spec-codegen/src/lib.rs excuses `{id}`, which the \
+                 manifest no longer deprecates. Drop the entry."
+            ));
+        }
+    }
+
+    s.push_str(
+        "/// Forms spytial-core has deprecated, in the order the manifest lists them.\n\
+         pub static DEPRECATIONS: &[DeprecationSpec] = &[\n",
+    );
+    s.push_str(&dep_entries.join("\n"));
     s.push_str("\n];\n\n");
 
     // ---- orientation list rules ----
