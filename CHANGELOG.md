@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Fixed: a relation's type signature is no longer frozen by whichever tuple
+  arrived first (#79). Relations are keyed by name in one flat namespace, so
+  two structs with a same-named field share one relation; its header `types`
+  is now the position-wise join of every tuple's types — positions all tuples
+  agree on keep their concrete type, positions that vary widen to `"atom"`.
+  The join is order-independent. When a user field shares its name with a
+  built-in relation of different arity (a field literally named `idx` or
+  `map_entry`), the header joins the common prefix and keeps the longest
+  arity seen; per-tuple `ITuple.types` remains exact in all cases, and
+  round-trips through `reify` are unaffected. Also corrected the `IRelation`
+  docs, which showed a concrete target type (`name(Person, string)`) that the
+  exporter never emits — the target position is always the literal `"atom"`.
+
 The derive macro's accepted keys and compile-time validation are now generated
 from spytial-core's own language manifest instead of transcribed by hand:
 

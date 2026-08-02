@@ -26,8 +26,33 @@ use serde::ser::{
     Serialize, SerializeMap, SerializeSeq, SerializeStruct, SerializeStructVariant, SerializeTuple,
     SerializeTupleStruct, SerializeTupleVariant, Serializer,
 };
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fmt;
+
+/// Join an incoming tuple's position types into a relation's stored header.
+///
+/// Relations are keyed by name in one flat namespace, so tuples from different
+/// source types can land in the same relation (two structs with a same-named
+/// field, or a field that shares its name with a built-in like `idx`). The
+/// header must describe all of them: positions on which every tuple agrees
+/// keep their concrete type, positions that vary widen to `"atom"`, the
+/// universal position type. When arities differ the common prefix is joined
+/// and the header keeps the longest arity seen, so every position that occurs
+/// in any tuple is described.
+///
+/// The join is commutative and associative, so the header is independent of
+/// the order in which tuples arrive.
+fn join_position_types(header: &mut Vec<String>, incoming: &[String]) {
+    for (have, new) in header.iter_mut().zip(incoming) {
+        if have != new {
+            *have = "atom".to_string();
+        }
+    }
+    if incoming.len() > header.len() {
+        header.extend_from_slice(&incoming[header.len()..]);
+    }
+}
 
 /// Export a Rust data structure to our JSON instance format using custom Serde serialization.
 ///
@@ -162,13 +187,21 @@ impl JsonDataSerializer {
             types: types.clone(),
         };
 
-        let rel = self.relations.entry(name.to_string()).or_insert(IRelation {
-            id: name.to_string(),
-            name: name.to_string(),
-            types,
-            tuples: vec![],
-        });
-        rel.tuples.push(tuple);
+        match self.relations.entry(name.to_string()) {
+            Entry::Vacant(entry) => {
+                entry.insert(IRelation {
+                    id: name.to_string(),
+                    name: name.to_string(),
+                    types,
+                    tuples: vec![tuple],
+                });
+            }
+            Entry::Occupied(mut entry) => {
+                let rel = entry.get_mut();
+                join_position_types(&mut rel.types, &tuple.types);
+                rel.tuples.push(tuple);
+            }
+        }
     }
 
     /// Merge decorators for `type_name` into the collected set, if it has any
