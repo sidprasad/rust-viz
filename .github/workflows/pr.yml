@@ -33,19 +33,17 @@ jobs:
       - name: Build all targets
         run: cargo build --all-targets
 
+      # `--workspace` covers the derive macro crate as well as `spytial`. It only
+      # does so because the root manifest now declares both as members; a path
+      # dependency alone is not a member, and these runs used to skip it.
       - name: Run unit and integration tests
-        run: cargo test --lib --tests
+        run: cargo test --workspace --lib --tests
 
+      # Guards the derive's own doc example, which never compiled and never ran.
       - name: Run doc tests
-        run: cargo test --doc
+        run: cargo test --workspace --doc
 
-      # `macros` is a path dependency, not a workspace member, so the runs above
-      # do not reach it and `--workspace` would not help. `--lib` only: its doc
-      # example needs `spytial`, which it cannot depend on without a cycle.
-      - name: Run derive-macro unit tests
-        run: cargo test --manifest-path macros/Cargo.toml --lib
-
-      # Its own workspace, so the run above does not reach it.
+      # Its own workspace, so the runs above do not reach it.
       - name: Run eval-corpus tests
         run: cargo test --manifest-path eval-corpus/Cargo.toml
 

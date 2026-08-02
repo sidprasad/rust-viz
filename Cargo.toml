@@ -1,3 +1,19 @@
+# Declaring a workspace at all is what pulls `macros` in: with no `[workspace]`
+# section the root package is a workspace of one, `cargo metadata` lists only
+# `spytial`, and `cargo test --workspace` silently skips the derive macro's own
+# tests. That is how a doc example which could never compile sat green in CI.
+#
+# Once the section exists, path dependencies under the workspace root are
+# members whether or not they are listed; `macros` is named anyway so the
+# intent survives a reader who does not know that rule. tests/workspace.rs
+# asserts the resolved membership, since deleting the section is the mistake
+# that costs coverage.
+#
+# `eval-corpus` and `spec-codegen` stay out on purpose — each declares its own
+# workspace, so they never enter this crate's build graph.
+[workspace]
+members = [".", "macros"]
+
 [package]
 name = "spytial"
 version = "0.3.0"

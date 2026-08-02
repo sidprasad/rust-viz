@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Repo hygiene, no behaviour change:
+
+- The derive macro's doc example never compiled. It needs `spytial`, which
+  `spytial_export_macros` cannot depend on normally, and it went unnoticed
+  because nothing ever ran that crate's doc tests. It compiles and is tested
+  now, via a dev-dependency cycle — which Cargo permits, and which is stripped
+  from the published manifest, so the release order is unchanged.
+- `macros` is now a workspace member. A path dependency is not one on its own,
+  so `cargo test` and `cargo test --workspace` both skipped the derive macro
+  entirely; CI runs `--workspace` for tests and doc tests, and
+  `tests/workspace.rs` fails if the membership goes away again.
+- Nine clippy warnings in `macros` cleaned up (`unwrap_or_else(|| "".into())`
+  to `unwrap_or_default()`). They were never reported before, for the same
+  reason.
+- The attribute list in the derive's docs was checked against the generated
+  spec tables: every attribute and key matches, nothing is documented that the
+  macro does not accept.
+
 Deprecated forms now warn at compile time:
 
 - Every form spytial-core marks deprecated produces a `deprecated` warning
