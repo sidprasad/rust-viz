@@ -1,14 +1,14 @@
 use serde::Serialize;
 use spytial::spytial_annotations::{
-    to_yaml, Constraint, Directive, DrawEnd, GroupParams, HasSpytialDecorators, InferredEdgeDraw,
-    SpytialDecorators as SpytialDecoratorsType, SpytialDecoratorsBuilder,
+    to_yaml, Constraint, Directive, DrawEnd, GroupParams, HasSpytialDecorators, IconPlacement,
+    InferredEdgeDraw, SpytialDecorators as SpytialDecoratorsType, SpytialDecoratorsBuilder,
 };
 use spytial::SpytialDecorators;
 
 #[derive(Serialize, SpytialDecorators)]
 #[align(selector = "peer", direction = "horizontal")]
 #[orientation(selector = "peer", directions = ["right"])]
-#[flag(name = "important")]
+#[flag(name = "hideDisconnected")]
 struct DerivedNode {
     id: u32,
 }
@@ -27,14 +27,14 @@ fn derive_macro_emits_align_and_existing_decorators() {
             && orientation.orientation.directions == vec!["right".to_string()])
     }));
     assert!(decorators.directives.iter().any(|directive| {
-        matches!(directive, Directive::Flag(flag) if flag.flag == "important")
+        matches!(directive, Directive::Flag(flag) if flag.flag == "hideDisconnected")
     }));
 
     let yaml = to_yaml(&decorators).unwrap();
     assert!(yaml.contains("align:"));
     assert!(yaml.contains("direction: horizontal"));
     assert!(yaml.contains("orientation:"));
-    assert!(yaml.contains("flag: important"));
+    assert!(yaml.contains("flag: hideDisconnected"));
 }
 
 #[derive(Serialize, SpytialDecorators)]
@@ -356,8 +356,8 @@ fn selector_accepts_raw_string_literals() {
         Some("red")
     );
 
-    assert!(decorators.directives.iter().any(|directive| {
-        matches!(directive, Directive::HideAtom(hide) if hide.hide_atom.selector == "Color + u32")
+    assert!(decorators.constraints.iter().any(|constraint| {
+        matches!(constraint, Constraint::HideAtom(hide) if hide.hide_atom.selector == "Color + u32")
     }));
     assert!(decorators.constraints.iter().any(|constraint| {
         matches!(constraint, Constraint::Align(align)
@@ -395,6 +395,105 @@ fn raw_selector_parens_do_not_unbalance_group_scan() {
     assert_eq!(
         style.border_style.as_ref().and_then(|b| b.color.as_deref()),
         Some("blue")
+    );
+}
+
+// Each selector below contains text that reads like one of the attribute's own
+// keys. A key is only a key outside the literal.
+#[derive(Serialize, SpytialDecorators)]
+#[size(
+    selector = r#"{x : Node | @:(x.label) = "width = 3"}"#,
+    height = 77,
+    width = 88
+)]
+struct KeyTextInSelectorSize {
+    id: u32,
+}
+
+#[derive(Serialize, SpytialDecorators)]
+#[orientation(
+    selector = r#"{x, y : Node | @:(x.note) = "negated = false"}"#,
+    directions = ["right"],
+    negated = true
+)]
+struct KeyTextInSelectorOrientation {
+    id: u32,
+}
+
+#[derive(Serialize, SpytialDecorators)]
+#[group(selector = r#"{x, y : Node | @:(x.note) = "field = id"}"#, name = "g")]
+struct KeyTextInSelectorGroup {
+    id: u32,
+}
+
+#[test]
+fn key_text_inside_a_selector_is_not_a_key() {
+    // A number: the flat scan matched `width = ` inside the literal, failed to
+    // parse `3"}"#`, and silently fell back to the default of 30.
+    let size = KeyTextInSelectorSize::decorators()
+        .constraints
+        .iter()
+        .find_map(|constraint| match constraint {
+            Constraint::Size(size) => Some(size.size.clone()),
+            _ => None,
+        })
+        .expect("size constraint");
+    assert_eq!(size.height, 77);
+    assert_eq!(size.width, 88);
+
+    // A bool: same shape, and it dropped a `negated = true` that was really set.
+    assert!(KeyTextInSelectorOrientation::decorators()
+        .constraints
+        .iter()
+        .any(|constraint| {
+            matches!(constraint, Constraint::Orientation(orientation)
+                if orientation.orientation.negated)
+        }));
+
+    // The choice between `group`'s two shapes: `field = id` inside the selector
+    // used to route a selector-based group to the field-based branch.
+    let group = KeyTextInSelectorGroup::decorators()
+        .constraints
+        .iter()
+        .find_map(|constraint| match constraint {
+            Constraint::Group(group) => Some(group.group.clone()),
+            _ => None,
+        })
+        .expect("group constraint");
+    assert!(
+        matches!(group, GroupParams::SelectorBased { ref name, .. } if name == "g"),
+        "expected a selector-based group, got {group:?}"
+    );
+}
+
+#[derive(Serialize, SpytialDecorators)]
+#[atom_style(
+    selector = r#"{x : Node |
+    @:(x.note) = "a
+b"}"#,
+    border_style(color = "red")
+)]
+struct MultiLineRawSelector {
+    id: u32,
+}
+
+#[test]
+fn raw_selector_keeps_its_own_whitespace() {
+    // Token text used to be flattened before extraction, which rewrote the
+    // newlines a raw string can legitimately carry — including inside a quoted
+    // comparand, where `"a\nb"` silently became `"a b"`.
+    let decorators = MultiLineRawSelector::decorators();
+    let selector = decorators
+        .directives
+        .iter()
+        .find_map(|directive| match directive {
+            Directive::AtomStyle(style) => style.atom_style.selector.clone(),
+            _ => None,
+        })
+        .expect("atom_style selector");
+    assert_eq!(
+        selector, "{x : Node |\n    @:(x.note) = \"a\nb\"}",
+        "the selector should be exactly what was written"
     );
 }
 
@@ -707,6 +806,9 @@ fn positive_constraints_omit_hold_field() {
             Constraint::Align(a) => assert!(!a.align.negated),
             Constraint::Cyclic(c) => assert!(!c.cyclic.negated),
             Constraint::Group(_) => {}
+            // `size` and `hideAtom` accept `hold` syntactically but ignore it,
+            // so they carry no negation to check.
+            Constraint::Size(_) | Constraint::HideAtom(_) => {}
         }
     }
 }
@@ -749,4 +851,192 @@ directives: []
     } else {
         panic!("expected orientation, got {:?}", from_core.constraints[0]);
     }
+}
+
+// ──────────────────────────────────────────────
+// spytial-core 4.2/4.3 surface: the iconStyle block and atomStyle's
+// independent showLabel, which together replace the old `icon` directive.
+// ──────────────────────────────────────────────
+
+#[derive(Serialize, SpytialDecorators)]
+#[atom_style(
+    selector = "Person",
+    icon_style(path = "bi:person-fill", placement = "badge", opacity = 0.4),
+    show_label = false
+)]
+struct Badged {
+    name: String,
+}
+
+#[test]
+fn atom_style_carries_icon_style_and_show_label() {
+    let decorators = Badged::decorators();
+    let style = decorators
+        .directives
+        .iter()
+        .find_map(|d| match d {
+            Directive::AtomStyle(s) => Some(&s.atom_style),
+            _ => None,
+        })
+        .expect("atom_style directive");
+
+    let icon = style.icon_style.as_ref().expect("icon_style block");
+    assert_eq!(icon.path.as_deref(), Some("bi:person-fill"));
+    assert_eq!(icon.placement, Some(IconPlacement::Badge));
+    assert_eq!(icon.opacity, Some(0.4));
+    assert_eq!(style.show_label, Some(false));
+
+    let yaml = to_yaml(&decorators).unwrap();
+    assert!(
+        yaml.contains("iconStyle:"),
+        "expected iconStyle in:\n{yaml}"
+    );
+    assert!(yaml.contains("placement: badge"), "in:\n{yaml}");
+    assert!(yaml.contains("showLabel: false"), "in:\n{yaml}");
+}
+
+#[derive(Serialize, SpytialDecorators)]
+#[icon(selector = "Person", path = "person.png", show_labels = true)]
+struct LegacyIcon {
+    name: String,
+}
+
+#[test]
+fn legacy_icon_rewrites_onto_atom_style() {
+    let decorators = LegacyIcon::decorators();
+    let style = decorators
+        .directives
+        .iter()
+        .find_map(|d| match d {
+            Directive::AtomStyle(s) => Some(&s.atom_style),
+            _ => None,
+        })
+        .expect("icon should desugar to an atom_style directive");
+
+    // `showLabels: true` splits into a badge beside a visible label.
+    let icon = style.icon_style.as_ref().expect("icon_style block");
+    assert_eq!(icon.path.as_deref(), Some("person.png"));
+    assert_eq!(icon.placement, Some(IconPlacement::Badge));
+    assert_eq!(style.show_label, Some(true));
+
+    let yaml = to_yaml(&decorators).unwrap();
+    assert!(
+        !yaml.contains("icon:"),
+        "the deprecated icon directive should not reach the wire:\n{yaml}"
+    );
+}
+
+// ──────────────────────────────────────────────
+// Keys the runtime always supported but the macro did not expose.
+// ──────────────────────────────────────────────
+
+#[derive(Serialize, SpytialDecorators)]
+#[attribute(field = "role", selector = "Person", filter = "Manager")]
+#[hide_field(field = "secret", selector = "Person", filter = "internal")]
+struct Scoped {
+    role: String,
+    secret: String,
+}
+
+#[test]
+fn attribute_and_hide_field_carry_selector_and_filter() {
+    let decorators = Scoped::decorators();
+
+    let attribute = decorators
+        .directives
+        .iter()
+        .find_map(|d| match d {
+            Directive::Attribute(a) => Some(&a.attribute),
+            _ => None,
+        })
+        .expect("attribute directive");
+    assert_eq!(attribute.field, "role");
+    assert_eq!(attribute.selector.as_deref(), Some("Person"));
+    assert_eq!(attribute.filter.as_deref(), Some("Manager"));
+
+    let hidden = decorators
+        .directives
+        .iter()
+        .find_map(|d| match d {
+            Directive::HideField(h) => Some(&h.hide_field),
+            _ => None,
+        })
+        .expect("hide_field directive");
+    assert_eq!(hidden.field, "secret");
+    assert_eq!(hidden.selector.as_deref(), Some("Person"));
+    assert_eq!(hidden.filter.as_deref(), Some("internal"));
+}
+
+// ──────────────────────────────────────────────
+// Defaults now come from spytial-core's manifest rather than from values
+// that were never in the vocabulary.
+// ──────────────────────────────────────────────
+
+#[derive(Serialize, SpytialDecorators)]
+#[cyclic(selector = "next")]
+struct DefaultedCycle {
+    id: u32,
+}
+
+#[test]
+fn cyclic_defaults_to_the_manifest_direction() {
+    let decorators = DefaultedCycle::decorators();
+    let cyclic = decorators
+        .constraints
+        .iter()
+        .find_map(|c| match c {
+            Constraint::Cyclic(c) => Some(&c.cyclic),
+            _ => None,
+        })
+        .expect("cyclic constraint");
+
+    // Previously "up", which is not a cycle direction at all.
+    assert_eq!(cyclic.direction, "clockwise");
+}
+
+#[derive(Serialize, SpytialDecorators)]
+#[icon(selector = "Person", path = "person.png")]
+struct BareLegacyIcon {
+    name: String,
+}
+
+#[test]
+fn bare_legacy_icon_uses_the_manifest_default() {
+    // `showLabels` defaults to false upstream, so the rewrite is a full-box
+    // icon with the label off. Defaulting it to true inverted both halves:
+    // a corner badge with the label on.
+    let decorators = BareLegacyIcon::decorators();
+    let style = decorators
+        .directives
+        .iter()
+        .find_map(|d| match d {
+            Directive::AtomStyle(s) => Some(&s.atom_style),
+            _ => None,
+        })
+        .expect("icon should desugar to an atom_style directive");
+
+    let icon = style.icon_style.as_ref().expect("icon_style block");
+    assert_eq!(icon.placement, Some(IconPlacement::Full));
+    assert_eq!(style.show_label, Some(false));
+}
+
+#[derive(Serialize, SpytialDecorators)]
+#[group(
+    selector = "Region",
+    name = "regions",
+    add_edge(points = "togroup", line_style(color = "gray"))
+)]
+struct GroupedWithConnector {
+    id: u32,
+}
+
+#[test]
+fn add_edge_block_round_trips() {
+    // The block form is validated like any other block now, so this also
+    // guards that valid leaves are not rejected by that check.
+    let decorators = GroupedWithConnector::decorators();
+    let yaml = to_yaml(&decorators).unwrap();
+    assert!(yaml.contains("addEdge:"), "in:\n{yaml}");
+    assert!(yaml.contains("points: togroup"), "in:\n{yaml}");
+    assert!(yaml.contains("color: gray"), "in:\n{yaml}");
 }

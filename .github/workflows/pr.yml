@@ -22,6 +22,10 @@ jobs:
 
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          # The spec-tables generator formats its output, so the drift check
+          # below needs rustfmt; this action installs a minimal profile.
+          components: rustfmt
 
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
@@ -38,6 +42,13 @@ jobs:
       # Its own workspace, so the run above does not reach it.
       - name: Run eval-corpus tests
         run: cargo test --manifest-path eval-corpus/Cargo.toml
+
+      # Also its own workspace. Fails if macros/src/spec_tables.rs has drifted
+      # from templates/vendor/spytial-language.json — i.e. spytial-core was
+      # re-vendored without regenerating the derive macro's spec tables.
+      # rustfmt is needed because the generator formats its output.
+      - name: Check spec tables are current
+        run: cargo test --manifest-path spec-codegen/Cargo.toml
 
   rustfmt:
     name: Rustfmt
@@ -62,3 +73,8 @@ jobs:
       # Its own workspace, so the check above does not reach it.
       - name: Check eval-corpus formatting
         run: cargo fmt --manifest-path eval-corpus/Cargo.toml --all -- --check
+
+      # Likewise. (macros/src/spec_tables.rs is generated, but the generator
+      # runs its output through rustfmt, so it is checked like any other file.)
+      - name: Check spec-codegen formatting
+        run: cargo fmt --manifest-path spec-codegen/Cargo.toml --all -- --check

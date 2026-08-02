@@ -22,6 +22,7 @@ Thumbs.db
 
 macros/target/
 eval-corpus/target/
+spec-codegen/target/
 
 # mdBook build output
 docs/book/

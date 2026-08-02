@@ -100,16 +100,16 @@ Every decorator is a Rust attribute on a type that derives
 
 | Attribute | What it does |
 |-----------|--------------|
-| `#[attribute(field = "...")]` | Promote a field's value into the node's label. |
-| `#[flag(name = "...")]` | Set a global display flag, e.g. `hideDisconnected`. |
+| `#[attribute(field = "...", selector = "...", filter = "...")]` | Promote a field's value into the node's label. |
+| `#[flag(name = "...")]` | Set a global display flag. `name` is required and is one of `hideDisconnected`, `hideDisconnectedBuiltIns`. |
 
 ### Layout constraints
 
 | Attribute | What it does |
 |-----------|--------------|
-| `#[orientation(selector = "...", directions = [...])]` | Place matched pairs in a direction. `directions` ⊆ `"left"`, `"right"`, `"above"`, `"below"`. |
+| `#[orientation(selector = "...", directions = [...])]` | Place matched pairs in a direction. Required; each value is one of `"above"`, `"below"`, `"left"`, `"right"`, or a `"directly*"` variant. `above`/`below` and `left`/`right` are mutually exclusive, and a `directly*` value admits only its own plain counterpart alongside it. |
 | `#[align(selector = "...", direction = "horizontal" \| "vertical")]` | Force matched atoms to share an axis. |
-| `#[cyclic(selector = "...", direction = "clockwise" \| "counterclockwise")]` | Arrange matched atoms around a ring. |
+| `#[cyclic(selector = "...", direction = "clockwise" \| "counterclockwise")]` | Arrange matched atoms around a ring. `direction` defaults to `clockwise`. |
 | `#[group(...)]` | Cluster related atoms into a labelled region — by `field` or by `selector` (the two are mutually exclusive; if `field` is present the selector is ignored). |
 
 `orientation`, `align`, `cyclic`, and `group` each take an optional
@@ -122,19 +122,24 @@ written as nested groups that mirror the YAML 1:1:
 
 - `line_style(color = "...", pattern = "solid" | "dashed" | "dotted", weight = 2.0, highlight = "...")` — a drawn edge line;
 - `text_style(size = "small" | "normal" | "large", color = "...")` — any label;
-- `border_style(color = "...", width = 2.0)` / `fill_style(color = "...")` — an atom's outline and interior.
+- `border_style(color = "...", width = 2.0)` / `fill_style(color = "...")` — an atom's outline and interior;
+- `icon_style(path = "...", placement = "full" | "badge", opacity = 0.4)` — an atom's icon.
 
-Every block field is optional — set only what you mean. Pattern/size/direction
-typos and non-positive weights are compile errors.
+Every block field is optional — set only what you mean.
+
+Which keys each attribute accepts, and which values are legal, are generated
+from spytial-core's own language manifest (see `spec-codegen/`). A key or value
+this crate rejects is one spytial-core would reject or silently ignore, so
+typos, unknown block leaves, out-of-vocabulary values, and out-of-range numbers
+are all compile errors rather than a diagram that renders without them.
 
 | Attribute | What it does |
 |-----------|--------------|
-| `#[atom_style(selector = "...", border_style(...), fill_style(...), text_style(...))]` | Style matched atoms' border, interior fill, and label independently. |
+| `#[atom_style(selector = "...", border_style(...), fill_style(...), icon_style(...), text_style(...), show_label = ...)]` | Style matched atoms' border, interior fill, icon, and label independently. |
 | `#[size(selector = "...", height = ..., width = ...)]` | Override node dimensions (in diagram units). |
-| `#[icon(selector = "...", path = "...", show_labels = ...)]` | Replace matched atoms with an image icon (`path` is a path or URL). |
+| `#[icon(selector = "...", path = "...", show_labels = ...)]` | Deprecated by spytial-core 4.2; rewrites to `atom_style`. Its single `show_labels` boolean drove label visibility and icon geometry at once — prefer `icon_style(...)` plus `show_label`, which are independent. |
 | `#[edge_style(field = "...", line_style(...), text_style(...), show_label = ..., hidden = ...)]` | Style relation arrows: the drawn line, the edge's label, and visibility. |
-| `#[projection(sig = "...")]` | Project atoms of `sig` out of the main view. |
-| `#[hide_field(field = "...")]` | Suppress a relation from the rendering. |
+| `#[hide_field(field = "...", selector = "...", filter = "...")]` | Suppress a relation from the rendering. |
 | `#[hide_atom(selector = "...")]` | Suppress matched atoms entirely. |
 | `#[inferred_edge(name = "...", selector = "...", draw = "...", line_style(...), text_style(...))]` | Define a synthetic edge derivable from the data, optionally styled. `draw` attaches its ends to group hulls — see below. |
 | `#[tag(to_tag = "...", name = "...", value = "...", text_style(...))]` | Attach a computed attribute to matched atoms. |

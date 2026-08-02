@@ -7,6 +7,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+The derive macro's accepted keys and compile-time validation are now generated
+from spytial-core's own language manifest instead of transcribed by hand:
+
+- Vendored spytial-core bumped 4.1.0 -> 4.3.0, which is the first release to
+  ship `docs/spytial-language.json` — a machine-readable description of every
+  constraint and directive, its fields, their closed vocabularies and numeric
+  bounds, and whether the engine *rejects* a bad value or silently ignores it.
+  The manifest is vendored alongside the browser assets.
+- New `spec-codegen` crate (its own workspace, unpublished, like `eval-corpus`)
+  generates `macros/src/spec_tables.rs` from that manifest. Its tests fail if
+  the checked-in tables have drifted, and CI runs them.
+- New `scripts/update-spytial-core.sh <version>` re-vendors and regenerates in
+  one step, so a version bump can't silently leave the macro describing the
+  previous language. The manual copy-the-files procedure it replaces is how the
+  drift below accumulated.
+- **Breaking**: `#[projection(sig = "...")]` is removed, along with
+  `Directive::Projection`, `ProjectionDirective`, `ProjectionParams`, and
+  `SpytialDecoratorsBuilder::projection`. No released spytial-core has ever had
+  a parser for a `projection:` directive — it serialized into the spec and was
+  dropped on the floor.
+- **Breaking**: `#[flag]` now requires `name`, and rejects anything outside
+  `hideDisconnected` / `hideDisconnectedBuiltIns`. The previous default was
+  `important`, which the engine does not recognize, so a bare `#[flag]` emitted
+  a directive that did nothing.
+- **Breaking**: `#[orientation]` now requires `directions`. The previous
+  default was `["up", "down"]`, neither of which is an orientation direction,
+  so the constraint matched nothing. Values are checked against the vocabulary,
+  and contradictory sets (`above` with `below`, a `directly*` variant with
+  anything but its own plain counterpart) are compile errors, matching what
+  spytial-core rejects at parse time.
+- `#[cyclic]`'s `direction` now defaults to `clockwise` (the manifest's own
+  default) rather than `up`, which is not a cycle direction. `align` and
+  `cyclic` directions are now checked against their vocabularies.
+- Unknown leaves inside a style block are compile errors, so
+  `line_style(colour = "red")` fails instead of rendering unstyled. `size`
+  dimensions must be greater than 0.
+- `#[attribute]` gains `selector` and `filter`, and `#[hide_field]` gains
+  `filter`. `AttributeParams.selector` already existed on the wire but the
+  macro hardcoded it to `None`.
+- New in spytial-core 4.2, now exposed: the `icon_style(path, placement,
+  opacity)` block and `atom_style`'s independent `show_label`.
+  **Breaking**: `#[icon]` is deprecated upstream and now rewrites onto
+  `atom_style` — its one `show_labels` boolean splits into
+  `icon_style(placement = ...)` and `show_label` — so `Directive::Icon`,
+  `IconDirective`, and `IconParams` are removed, as `atomColor` and `edgeColor`
+  already were.
+- `SpytialDecoratorsBuilder` signature changes follow from the above:
+  `atom_style` takes `icon_style` and `show_label`, `attribute_styled` and
+  `hide_field` take `filter`.
+- **Breaking** (reading, not just writing): removing `Directive::Icon` and
+  `Directive::Projection` also removes the ability to *deserialize* a spec
+  containing `icon:` or `projection:`. `Directive` is `#[serde(untagged)]`, so
+  such a document now fails with `data did not match any variant of untagged
+  enum Directive`, which names no key. `icon:` is deprecated upstream but
+  spytial-core 4.3 still parses it, so a hand-written spec can legitimately
+  contain one. This crate only ever writes decorator sets, so nothing in it is
+  affected; a consumer round-tripping YAML through `SpytialDecorators` is.
+- Legacy `edge_style` flat keys are validated like their block replacements:
+  `style` against solid/dashed/dotted (after the same trim-and-lowercase
+  spytial-core applies, so `"Dotted"` still parses) and `weight` for
+  positivity. Both previously reached the runtime, which dropped them with a
+  note on stderr.
+- `add_edge(...)` is checked like the other blocks. A typo'd leaf
+  (`add_edge(pointz = "togroup")`) silently fell back to `points: none`,
+  drawing no connector at all.
+- `#[icon]`'s `show_labels` defaults to `false`, matching the manifest. It
+  defaulted to `true`, which inverted the whole rewrite for a bare `#[icon]`:
+  a corner badge with the label on, where the engine draws a full-box icon with
+  the label off.
+- **Breaking** (wire format): `size` and `hideAtom` are emitted under
+  `constraints:` rather than `directives:`, which is where the manifest says
+  they belong. spytial-core still parses the directives placement but warns,
+  and drops deprecated forms in a major release. `Directive::Size` and
+  `Directive::HideAtom` are now `Constraint::Size` and `Constraint::HideAtom`,
+  and `SizeDirective`/`HideAtomDirective` are renamed to
+  `SizeConstraint`/`HideAtomConstraint`. The authoring surface is unchanged —
+  `#[size(...)]` and `#[hide_atom(...)]` are written exactly as before, since
+  the constraint/directive split is a wire-format detail Rust users never touch.
+  A new test in `spec-codegen` checks every form's section against the manifest,
+  because nothing in the authoring surface or the generated tables could.
+
 ## [0.3.0] - TBD
 
 Speaks the spytial-core 4.0 directive contract:
@@ -26,6 +107,18 @@ Speaks the spytial-core 4.0 directive contract:
   and the raw form was dropped entirely, leaving a rule that matched every
   atom. Attribute keys are now also matched on an identifier boundary and only
   outside literals, so `key = "..."` text inside a selector is content.
+- Every attribute key is read by one scan, so numbers, bools, arrays and the
+  `group` shape test agree with strings about what a key is. Text inside a
+  selector that reads like a key used to be taken as one, and the fallback was
+  silent: `#[size(selector = "...width = 3...", width = 88)]` emitted the
+  default width of 30, a real `negated = true` was dropped by a selector
+  mentioning `negated = `, and a selector-based `#[group]` whose selector
+  mentioned `field = ` was rewritten into an entirely different field-based
+  group.
+- A raw-string selector keeps its own whitespace. Token text is no longer
+  flattened before extraction, which had rewritten the newlines a raw string
+  can legitimately carry — including inside a quoted comparand, where
+  `"a\nb"` silently became `"a b"`.
 - New `draw = "<end> -> <end>"` on `#[inferred_edge(...)]` (spytial-core 3.2):
   each end is `_` (the tuple's own atom) or a `group` constraint's name, in
   which case that end attaches to the group's hull — group-to-group and
