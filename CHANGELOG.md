@@ -21,6 +21,17 @@ Repo hygiene, no behaviour change:
 - Nine clippy warnings in `macros` cleaned up (`unwrap_or_else(|| "".into())`
   to `unwrap_or_default()`). They were never reported before, for the same
   reason.
+- The workspace now excludes `.claude/worktrees`, where Claude Code nests its
+  git worktrees inside the checkout. A worktree on a branch predating the
+  `[workspace]` section has none of its own, so cargo walked up, hit this
+  checkout's manifest, and refused to build the worktree ("current package
+  believes it's in a workspace when it's not"). This also required dropping
+  `.` from `members`: exclusion is "under an excluded path and not under a
+  member path", both prefix checks, so a literal `.` made every path in the
+  checkout a member prefix and silently defeated `exclude`. The root package
+  is a member regardless — it hosts the `[workspace]` section — and
+  `tests/workspace.rs` now guards the exclusion with a throwaway nested
+  package, alongside the membership guard.
 - The attribute list in the derive's docs was checked against the generated
   spec tables: every attribute and key matches, nothing is documented that the
   macro does not accept.
