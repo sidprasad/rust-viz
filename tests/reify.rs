@@ -208,3 +208,62 @@ fn nested_options_round_trip() {
     full_roundtrip(Some(Some(Option::<i32>::None))); // Some(Some(None))
     full_roundtrip(vec![Some(Some(1_i32)), Some(None), None]);
 }
+
+#[test]
+fn colliding_relation_names_round_trip() {
+    // Relations are keyed by name in one flat namespace, so same-named edges
+    // from different types share a relation whose header is widened position-
+    // wise (issue #79). Reify buckets tuples by source atom, so round-trips
+    // must be unaffected — even for a field named like a built-in relation of
+    // different arity (`idx`), which produces a mixed-arity relation.
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    struct Person {
+        name: String,
+    }
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    struct Company {
+        name: String,
+    }
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    struct BothNames {
+        p: Person,
+        c: Company,
+    }
+    full_roundtrip(BothNames {
+        p: Person { name: "Ada".into() },
+        c: Company {
+            name: "Acme".into(),
+        },
+    });
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    struct HasIdx {
+        idx: u32,
+    }
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    struct MixedArity {
+        a: HasIdx,
+        b: Vec<u32>,
+    }
+    full_roundtrip(MixedArity {
+        a: HasIdx { idx: 9 },
+        b: vec![10, 11],
+    });
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    struct Meters(f64);
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    struct HasValue {
+        value: u32,
+    }
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    struct ValueCollision {
+        a: HasValue,
+        b: Meters,
+    }
+    full_roundtrip(ValueCollision {
+        a: HasValue { value: 7 },
+        b: Meters(1.5),
+    });
+}

@@ -26,8 +26,52 @@ use serde::ser::{
     Serialize, SerializeMap, SerializeSeq, SerializeStruct, SerializeStructVariant, SerializeTuple,
     SerializeTupleStruct, SerializeTupleVariant, Serializer,
 };
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fmt;
+
+/// Join an incoming tuple's position types into a relation's stored header.
+///
+/// Relations are keyed by name in one flat namespace, so tuples from different
+/// source types can land in the same relation (two structs with a same-named
+/// field, or a field that shares its name with a built-in like `idx`). The
+/// header must describe all of them: positions on which every tuple agrees
+/// keep their concrete type, positions that vary widen to `"atom"`, the
+/// universal position type. When arities differ the common prefix is joined
+/// and the header keeps the longest arity seen, so every position that occurs
+/// in any tuple is described.
+///
+/// The join is commutative and associative, so the header is independent of
+/// the order in which tuples arrive.
+fn join_position_types(header: &mut Vec<String>, incoming: &[String]) {
+    for (have, new) in header.iter_mut().zip(incoming) {
+        if have != new {
+            *have = "atom".to_string();
+        }
+    }
+    if incoming.len() > header.len() {
+        header.extend_from_slice(&incoming[header.len()..]);
+    }
+}
+
+/// Turn the serializer's relation map into the wire-format list.
+///
+/// Tuples are ordered longest-arity-first (stably, so serialization order is
+/// kept within an arity, and uniform-arity relations are untouched). This is
+/// for spytial-core's benefit: `DataInstanceNormalizer.inferRelationSignatures`
+/// runs unconditionally on `JSONDataInstance` construction and keeps a
+/// relation's header only when its length equals the *first* tuple's arity,
+/// re-inferring it at that arity otherwise. The joined header has the longest
+/// arity that occurs, so a longest tuple must come first for the header to
+/// survive — and for the consumed signature to stay independent of
+/// serialization order in the mixed-arity collision case.
+fn finalize_relations(relations: HashMap<String, IRelation>) -> Vec<IRelation> {
+    let mut relations: Vec<IRelation> = relations.into_values().collect();
+    for rel in &mut relations {
+        rel.tuples.sort_by_key(|t| std::cmp::Reverse(t.atoms.len()));
+    }
+    relations
+}
 
 /// Export a Rust data structure to our JSON instance format using custom Serde serialization.
 ///
@@ -55,7 +99,7 @@ pub fn try_export_json_instance<T: Serialize>(
     value.serialize(&mut serializer)?;
     Ok(JsonDataInstance {
         atoms: serializer.atoms,
-        relations: serializer.relations.into_values().collect(),
+        relations: finalize_relations(serializer.relations),
     })
 }
 
@@ -92,7 +136,7 @@ pub fn try_export_json_instance_with_decorators<T: Serialize>(
     value.serialize(&mut serializer)?;
     let instance = JsonDataInstance {
         atoms: serializer.atoms,
-        relations: serializer.relations.into_values().collect(),
+        relations: finalize_relations(serializer.relations),
     };
     Ok((instance, serializer.collected_decorators))
 }
@@ -162,13 +206,21 @@ impl JsonDataSerializer {
             types: types.clone(),
         };
 
-        let rel = self.relations.entry(name.to_string()).or_insert(IRelation {
-            id: name.to_string(),
-            name: name.to_string(),
-            types,
-            tuples: vec![],
-        });
-        rel.tuples.push(tuple);
+        match self.relations.entry(name.to_string()) {
+            Entry::Vacant(entry) => {
+                entry.insert(IRelation {
+                    id: name.to_string(),
+                    name: name.to_string(),
+                    types,
+                    tuples: vec![tuple],
+                });
+            }
+            Entry::Occupied(mut entry) => {
+                let rel = entry.get_mut();
+                join_position_types(&mut rel.types, &tuple.types);
+                rel.tuples.push(tuple);
+            }
+        }
     }
 
     /// Merge decorators for `type_name` into the collected set, if it has any

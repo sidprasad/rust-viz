@@ -67,18 +67,31 @@ pub struct ITuple {
     pub types: Vec<String>,
 }
 
-/// A relation — a named, typed edge set. All tuples in a relation share
-/// the same arity and position types.
+/// A relation — a named, typed edge set. Relations are keyed by name in a
+/// single flat namespace, so same-named edges from different source types
+/// (two structs that each have a `name` field, say) share one relation.
 ///
-/// Examples: a field relation `name(Person, string)`, a sequence relation
-/// `idx(sequence, index, T)`, or a map relation `map_entry(map, K, V)`.
+/// Examples: a field relation `name(Person, atom)`, a sequence relation
+/// `idx(sequence, index, atom)`, or a map relation `map_entry(map, atom, atom)`.
+/// The target position is always the literal `"atom"`, the universal type.
+///
+/// Tuples normally share one arity. The exception is a struct field that
+/// shares its name with a built-in relation of different arity (a field
+/// literally named `idx` or `map_entry`): its tuples land in the built-in's
+/// relation, mixing arities. Per-tuple [`ITuple::types`] stays exact either
+/// way, and tuples are ordered longest-arity-first so that [`Self::types`]
+/// always has the first tuple's arity — spytial-core's normalizer discards
+/// any header whose length differs from it.
 #[derive(Serialize, Deserialize, Debug)]
 pub struct IRelation {
     /// Stable identifier for the relation (currently the same as [`Self::name`]).
     pub id: String,
     /// Relation name — `"idx"`, `"map_entry"`, or a struct field name.
     pub name: String,
-    /// Type names for each position in the tuples, in position order.
+    /// Position types for the relation as a whole: the position-wise join of
+    /// every tuple's [`ITuple::types`]. A position on which all tuples agree
+    /// keeps its concrete type; one that varies is widened to `"atom"`. If
+    /// tuple arities differ, the header has the longest arity that occurs.
     pub types: Vec<String>,
     /// All tuples belonging to this relation.
     pub tuples: Vec<ITuple>,

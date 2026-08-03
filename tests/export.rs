@@ -698,3 +698,190 @@ fn data_instance_and_decorators_agree_on_types() {
     assert!(yaml.contains("Parent"), "decorator yaml references Parent");
     assert!(yaml.contains("Child"), "decorator yaml references Child");
 }
+
+// ──────────────────────────────────────────────
+// 19. Same-named relations across types join their header (issue #79)
+// ──────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct Person {
+    name: String,
+}
+
+#[derive(Serialize)]
+struct Company {
+    name: String,
+}
+
+#[derive(Serialize)]
+struct BothNames {
+    p: Person,
+    c: Company,
+}
+
+#[derive(Serialize)]
+struct BothNamesReversed {
+    c: Company,
+    p: Person,
+}
+
+#[test]
+fn same_named_field_across_types_widens_relation_header() {
+    let inst = export_json_instance(&BothNames {
+        p: Person { name: "Ada".into() },
+        c: Company {
+            name: "Acme".into(),
+        },
+    });
+
+    let rel = relation(&inst, "name");
+    assert_eq!(rel.tuples.len(), 2);
+
+    // The header describes both source types only by widening to "atom".
+    assert_eq!(rel.types, vec!["atom", "atom"]);
+
+    // Per-tuple types stay exact.
+    let person_id = &atom_by_type(&inst, "Person").id;
+    let company_id = &atom_by_type(&inst, "Company").id;
+    for tuple in &rel.tuples {
+        let expected = if &tuple.atoms[0] == person_id {
+            vec!["Person", "atom"]
+        } else {
+            assert_eq!(&tuple.atoms[0], company_id);
+            vec!["Company", "atom"]
+        };
+        assert_eq!(tuple.types, expected);
+    }
+}
+
+#[test]
+fn joined_header_is_independent_of_tuple_order() {
+    let forward = export_json_instance(&BothNames {
+        p: Person { name: "Ada".into() },
+        c: Company {
+            name: "Acme".into(),
+        },
+    });
+    let reversed = export_json_instance(&BothNamesReversed {
+        c: Company {
+            name: "Acme".into(),
+        },
+        p: Person { name: "Ada".into() },
+    });
+
+    assert_eq!(
+        relation(&forward, "name").types,
+        relation(&reversed, "name").types
+    );
+}
+
+#[test]
+fn single_source_type_keeps_precise_header() {
+    let inst = export_json_instance(&Flat {
+        name: "solo".into(),
+        age: 1,
+    });
+
+    assert_eq!(relation(&inst, "name").types, vec!["Flat", "atom"]);
+    assert_eq!(relation(&inst, "age").types, vec!["Flat", "atom"]);
+}
+
+// A user field named like the built-in `value` relation (same arity):
+// the shared header widens, nothing else changes.
+
+#[derive(Serialize)]
+struct Meters(f64);
+
+#[derive(Serialize)]
+struct ValueCollision {
+    a: Inner,  // field relation value(Inner, atom)
+    b: Meters, // newtype relation value(newtype_struct, atom)
+}
+
+#[test]
+fn field_colliding_with_builtin_value_relation_widens_header() {
+    let inst = export_json_instance(&ValueCollision {
+        a: Inner { value: 7 },
+        b: Meters(1.5),
+    });
+
+    let rel = relation(&inst, "value");
+    assert_eq!(rel.tuples.len(), 2);
+    assert_eq!(rel.types, vec!["atom", "atom"]);
+}
+
+// A user field named like the built-in `idx` relation (different arity):
+// the header joins the common prefix and keeps the longest arity, and
+// per-tuple types/arity remain exact for every tuple.
+
+#[derive(Serialize)]
+struct HasIdx {
+    idx: u32,
+}
+
+#[derive(Serialize)]
+struct MixedArity {
+    a: HasIdx,
+    b: Vec<u32>,
+}
+
+#[derive(Serialize)]
+struct MixedArityReversed {
+    b: Vec<u32>,
+    a: HasIdx,
+}
+
+#[test]
+fn field_colliding_with_different_arity_builtin_keeps_longest_header() {
+    let inst = export_json_instance(&MixedArity {
+        a: HasIdx { idx: 9 },
+        b: vec![10, 11],
+    });
+
+    let rel = relation(&inst, "idx");
+    assert_eq!(rel.tuples.len(), 3);
+    assert_eq!(rel.types, vec!["atom", "atom", "atom"]);
+
+    let field_tuples: Vec<_> = rel.tuples.iter().filter(|t| t.atoms.len() == 2).collect();
+    let seq_tuples: Vec<_> = rel.tuples.iter().filter(|t| t.atoms.len() == 3).collect();
+    assert_eq!(field_tuples.len(), 1);
+    assert_eq!(seq_tuples.len(), 2);
+    assert_eq!(field_tuples[0].types, vec!["HasIdx", "atom"]);
+    for tuple in seq_tuples {
+        assert_eq!(tuple.types, vec!["sequence", "index", "atom"]);
+    }
+}
+
+#[test]
+fn mixed_arity_relation_orders_longest_tuples_first() {
+    // spytial-core's `DataInstanceNormalizer.inferRelationSignatures` runs on
+    // every `JSONDataInstance` construction and keeps a relation header only
+    // when its length equals the *first* tuple's arity — otherwise it re-infers
+    // a signature at that arity. The joined header has the longest arity that
+    // occurs, so a longest tuple must come first, regardless of which side of
+    // the collision serialized first.
+    let forward = export_json_instance(&MixedArity {
+        a: HasIdx { idx: 9 },
+        b: vec![10, 11],
+    });
+    let reversed = export_json_instance(&MixedArityReversed {
+        b: vec![10, 11],
+        a: HasIdx { idx: 9 },
+    });
+
+    for inst in [&forward, &reversed] {
+        for rel in &inst.relations {
+            assert_eq!(
+                rel.types.len(),
+                rel.tuples[0].types.len(),
+                "relation {:?}: header arity must match the first tuple's, \
+                 or spytial-core's normalizer replaces the header",
+                rel.name
+            );
+        }
+    }
+    assert_eq!(
+        relation(&forward, "idx").types,
+        relation(&reversed, "idx").types
+    );
+}

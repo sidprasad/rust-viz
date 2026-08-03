@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Fixed: a relation's type signature is no longer frozen by whichever tuple
+  arrived first (#79). Relations are keyed by name in one flat namespace, so
+  two structs with a same-named field share one relation; its header `types`
+  is now the position-wise join of every tuple's types — positions all tuples
+  agree on keep their concrete type, positions that vary widen to `"atom"`.
+  The join is order-independent. When a user field shares its name with a
+  built-in relation of different arity (a field literally named `idx` or
+  `map_entry`), the header joins the common prefix and keeps the longest
+  arity seen, and the relation's tuples are ordered longest-first — vendored
+  spytial-core's normalizer keeps a header only when its length matches the
+  first tuple's arity, so without the ordering the joined header would not
+  survive `JSONDataInstance` construction. Per-tuple `ITuple.types` remains
+  exact in all cases, and round-trips through `reify` are unaffected. Also
+  corrected the `IRelation`
+  docs, which showed a concrete target type (`name(Person, string)`) that the
+  exporter never emits — the target position is always the literal `"atom"`.
+
 Repo hygiene, no behaviour change:
 
 - The derive macro's doc example never compiled. It needs `spytial`, which
@@ -21,6 +38,17 @@ Repo hygiene, no behaviour change:
 - Nine clippy warnings in `macros` cleaned up (`unwrap_or_else(|| "".into())`
   to `unwrap_or_default()`). They were never reported before, for the same
   reason.
+- The workspace now excludes `.claude/worktrees`, where Claude Code nests its
+  git worktrees inside the checkout. A worktree on a branch predating the
+  `[workspace]` section has none of its own, so cargo walked up, hit this
+  checkout's manifest, and refused to build the worktree ("current package
+  believes it's in a workspace when it's not"). This also required dropping
+  `.` from `members`: exclusion is "under an excluded path and not under a
+  member path", both prefix checks, so a literal `.` made every path in the
+  checkout a member prefix and silently defeated `exclude`. The root package
+  is a member regardless — it hosts the `[workspace]` section — and
+  `tests/workspace.rs` now guards the exclusion with a throwaway nested
+  package, alongside the membership guard.
 - The attribute list in the derive's docs was checked against the generated
   spec tables: every attribute and key matches, nothing is documented that the
   macro does not accept.
