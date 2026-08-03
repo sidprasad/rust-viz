@@ -333,13 +333,18 @@ fn recursive_struct_produces_multiple_typed_atoms() {
 // 9. Decorators are inherited through nested types
 // ──────────────────────────────────────────────
 
+// These two use the deprecated `atom_color` on purpose: what they check is that
+// a nested type's decorators reach the parent's spec, and the legacy form is the
+// shortest thing that produces one distinguishable directive per type.
 #[derive(Serialize, SpytialDecorators)]
+#[allow(deprecated)]
 #[atom_color(selector = "{x : Parent | true}", value = "blue")]
 struct Parent {
     child: Child,
 }
 
 #[derive(Serialize, SpytialDecorators)]
+#[allow(deprecated)]
 #[atom_color(selector = "{x : Child | true}", value = "red")]
 #[attribute(field = "name")]
 struct Child {
@@ -499,7 +504,11 @@ fn enum_derive_produces_empty_decorators() {
 // 14. Multiple constraint types compose
 // ──────────────────────────────────────────────
 
+// `atom_color` is deprecated but kept here deliberately: this test counts how
+// many constraints and directives a mixed set produces, and the legacy form is
+// one of the shapes that has to keep landing in the right section.
 #[derive(Serialize, SpytialDecorators)]
+#[allow(deprecated)]
 #[orientation(selector = "sel1", directions = ["left", "below"])]
 #[align(selector = "sel2", direction = "horizontal")]
 #[atom_color(selector = "sel3", value = "green")]

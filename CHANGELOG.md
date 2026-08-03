@@ -20,6 +20,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   docs, which showed a concrete target type (`name(Person, string)`) that the
   exporter never emits — the target position is always the literal `"atom"`.
 
+Repo hygiene, no behaviour change:
+
+- The derive macro's doc example never compiled. It needs `spytial`, which
+  `spytial_export_macros` cannot depend on normally, and it went unnoticed
+  because nothing ever ran that crate's doc tests. It compiles and is tested
+  now, via a dev-dependency cycle — which Cargo permits, and which is stripped
+  from the published manifest, so the release order is unchanged.
+- `macros` is now a workspace member. A path dependency is not one on its own,
+  so `cargo test` and `cargo test --workspace` both skipped the derive macro
+  entirely; CI runs `--workspace` for tests and doc tests, and
+  `tests/workspace.rs` fails if the membership goes away again.
+- Nine clippy warnings in `macros` cleaned up (`unwrap_or_else(|| "".into())`
+  to `unwrap_or_default()`). They were never reported before, for the same
+  reason.
+- The workspace now excludes `.claude/worktrees`, where Claude Code nests its
+  git worktrees inside the checkout. A worktree on a branch predating the
+  `[workspace]` section has none of its own, so cargo walked up, hit this
+  checkout's manifest, and refused to build the worktree ("current package
+  believes it's in a workspace when it's not"). This also required dropping
+  `.` from `members`: exclusion is "under an excluded path and not under a
+  member path", both prefix checks, so a literal `.` made every path in the
+  checkout a member prefix and silently defeated `exclude`. The root package
+  is a member regardless — it hosts the `[workspace]` section — and
+  `tests/workspace.rs` now guards the exclusion with a throwaway nested
+  package, alongside the membership guard.
+- The attribute list in the derive's docs was checked against the generated
+  spec tables: every attribute and key matches, nothing is documented that the
+  macro does not accept.
+
+Deprecated forms now warn at compile time:
+
+- Every form spytial-core marks deprecated produces a `deprecated` warning
+  naming the replacement and how its fields map across. The text is generated
+  from the manifest's `deprecations[]`, so it moves when upstream's does.
+  Nothing stops compiling and no behaviour changes — the deprecated forms are
+  still parsed and rewritten exactly as before.
+- The warning is keyed on the form, not the attribute, because two of them are
+  a deprecated *shape* of an attribute that is otherwise current:
+  `#[group(field = ...)]` warns and `#[group(selector = ...)]` does not;
+  `#[edge_style(value = ...)]` warns and the `line_style(...)` block form does
+  not. A bare `#[edge_style(field = "x")]` also stays quiet: it carries no
+  deprecated key, and the legacy path it takes is this crate's own blue
+  default rather than something the user asked for.
+- `#[allow(deprecated)]` on the type silences it. The expansion copies the
+  type's `allow`/`expect` attributes onto the generated marker, because that
+  marker is a sibling item — without the copy the only way to quiet one legacy
+  attribute would be `#![allow(deprecated)]` over the whole module.
+- This closes a gap in the tables added below: `AttrSpec::deprecated_for` was
+  generated correctly and never read, so the deprecation data was extracted
+  from the manifest and then dropped. `#[group(field = ...)]` had no signal at
+  all, because deprecation was recorded per attribute and `#[group]` merges a
+  deprecated manifest item with a current one.
+- spec-codegen fails the build if spytial-core deprecates something new that is
+  neither warned about nor listed in `DEPRECATIONS_NOT_APPLICABLE` with a
+  reason, and if a listed exemption goes stale. Wire-section placements and the
+  inline `inferredEdge` fields are exempt: the macro never offered them.
+- CI now runs the derive macro's own unit tests. It is a path dependency rather
+  than a workspace member, so `cargo test` at the root never reached it and
+  `--workspace` does not either; it needs its own `--manifest-path` step, like
+  `eval-corpus` and `spec-codegen`.
+
 The derive macro's accepted keys and compile-time validation are now generated
 from spytial-core's own language manifest instead of transcribed by hand:
 
