@@ -15,8 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The join is order-independent. When a user field shares its name with a
   built-in relation of different arity (a field literally named `idx` or
   `map_entry`), the header joins the common prefix and keeps the longest
-  arity seen; per-tuple `ITuple.types` remains exact in all cases, and
-  round-trips through `reify` are unaffected. Also corrected the `IRelation`
+  arity seen, and the relation's tuples are ordered longest-first — vendored
+  spytial-core's normalizer keeps a header only when its length matches the
+  first tuple's arity, so without the ordering the joined header would not
+  survive `JSONDataInstance` construction. Per-tuple `ITuple.types` remains
+  exact in all cases, and round-trips through `reify` are unaffected. Also
+  corrected the `IRelation`
   docs, which showed a concrete target type (`name(Person, string)`) that the
   exporter never emits — the target position is always the literal `"atom"`.
 

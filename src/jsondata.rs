@@ -79,7 +79,9 @@ pub struct ITuple {
 /// shares its name with a built-in relation of different arity (a field
 /// literally named `idx` or `map_entry`): its tuples land in the built-in's
 /// relation, mixing arities. Per-tuple [`ITuple::types`] stays exact either
-/// way.
+/// way, and tuples are ordered longest-arity-first so that [`Self::types`]
+/// always has the first tuple's arity — spytial-core's normalizer discards
+/// any header whose length differs from it.
 #[derive(Serialize, Deserialize, Debug)]
 pub struct IRelation {
     /// Stable identifier for the relation (currently the same as [`Self::name`]).

@@ -54,6 +54,25 @@ fn join_position_types(header: &mut Vec<String>, incoming: &[String]) {
     }
 }
 
+/// Turn the serializer's relation map into the wire-format list.
+///
+/// Tuples are ordered longest-arity-first (stably, so serialization order is
+/// kept within an arity, and uniform-arity relations are untouched). This is
+/// for spytial-core's benefit: `DataInstanceNormalizer.inferRelationSignatures`
+/// runs unconditionally on `JSONDataInstance` construction and keeps a
+/// relation's header only when its length equals the *first* tuple's arity,
+/// re-inferring it at that arity otherwise. The joined header has the longest
+/// arity that occurs, so a longest tuple must come first for the header to
+/// survive — and for the consumed signature to stay independent of
+/// serialization order in the mixed-arity collision case.
+fn finalize_relations(relations: HashMap<String, IRelation>) -> Vec<IRelation> {
+    let mut relations: Vec<IRelation> = relations.into_values().collect();
+    for rel in &mut relations {
+        rel.tuples.sort_by_key(|t| std::cmp::Reverse(t.atoms.len()));
+    }
+    relations
+}
+
 /// Export a Rust data structure to our JSON instance format using custom Serde serialization.
 ///
 /// Returns an empty [`JsonDataInstance`] if the value's `Serialize` impl fails. Use
@@ -80,7 +99,7 @@ pub fn try_export_json_instance<T: Serialize>(
     value.serialize(&mut serializer)?;
     Ok(JsonDataInstance {
         atoms: serializer.atoms,
-        relations: serializer.relations.into_values().collect(),
+        relations: finalize_relations(serializer.relations),
     })
 }
 
@@ -117,7 +136,7 @@ pub fn try_export_json_instance_with_decorators<T: Serialize>(
     value.serialize(&mut serializer)?;
     let instance = JsonDataInstance {
         atoms: serializer.atoms,
-        relations: serializer.relations.into_values().collect(),
+        relations: finalize_relations(serializer.relations),
     };
     Ok((instance, serializer.collected_decorators))
 }

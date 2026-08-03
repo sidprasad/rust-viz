@@ -825,6 +825,12 @@ struct MixedArity {
     b: Vec<u32>,
 }
 
+#[derive(Serialize)]
+struct MixedArityReversed {
+    b: Vec<u32>,
+    a: HasIdx,
+}
+
 #[test]
 fn field_colliding_with_different_arity_builtin_keeps_longest_header() {
     let inst = export_json_instance(&MixedArity {
@@ -844,4 +850,38 @@ fn field_colliding_with_different_arity_builtin_keeps_longest_header() {
     for tuple in seq_tuples {
         assert_eq!(tuple.types, vec!["sequence", "index", "atom"]);
     }
+}
+
+#[test]
+fn mixed_arity_relation_orders_longest_tuples_first() {
+    // spytial-core's `DataInstanceNormalizer.inferRelationSignatures` runs on
+    // every `JSONDataInstance` construction and keeps a relation header only
+    // when its length equals the *first* tuple's arity — otherwise it re-infers
+    // a signature at that arity. The joined header has the longest arity that
+    // occurs, so a longest tuple must come first, regardless of which side of
+    // the collision serialized first.
+    let forward = export_json_instance(&MixedArity {
+        a: HasIdx { idx: 9 },
+        b: vec![10, 11],
+    });
+    let reversed = export_json_instance(&MixedArityReversed {
+        b: vec![10, 11],
+        a: HasIdx { idx: 9 },
+    });
+
+    for inst in [&forward, &reversed] {
+        for rel in &inst.relations {
+            assert_eq!(
+                rel.types.len(),
+                rel.tuples[0].types.len(),
+                "relation {:?}: header arity must match the first tuple's, \
+                 or spytial-core's normalizer replaces the header",
+                rel.name
+            );
+        }
+    }
+    assert_eq!(
+        relation(&forward, "idx").types,
+        relation(&reversed, "idx").types
+    );
 }
