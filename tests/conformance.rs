@@ -23,6 +23,11 @@
 //! Node and from the published crate, which excludes the harness. Set
 //! `SPYTIAL_NODE` to point at a specific Node binary.
 //!
+//! The `cyclic()`, `sized()` and `hidden()` queries need spytial-core 4.4.2 or
+//! newer. Everything else here works from 4.4.1, which is where the CLI first
+//! shipped. Against an older bundle those three fail as unrecognized queries
+//! rather than silently passing, so a downgrade is loud.
+//!
 //! Docs: <https://sidprasad.github.io/spytial-core/#/testing-integrations>
 
 use serde::Serialize;
@@ -569,6 +574,145 @@ fn vec_elements_are_reachable_through_the_index() {
         json!([
             { "query": format!("must.below({root})"), "contains": [&first, &second],
               "because": "both elements are joined to the bag through idx, so both are entailed below it" },
+        ]),
+    ));
+}
+
+// ──────────────────────────────────────────────
+// 6. Cyclic
+// ──────────────────────────────────────────────
+
+#[derive(Serialize, SpytialDecorators)]
+#[cyclic(selector = "next")]
+struct Ring {
+    val: u32,
+    next: Option<Box<Ring>>,
+}
+
+/// `cyclic(A)` reports which atoms share a cyclic fragment with `A`.
+///
+/// Membership is settled by what the constraint *selected*, not by what a
+/// renderer drew, and it is symmetric: asking from any member returns the whole
+/// fragment. Which rotation was drawn is not entailed, so the query says
+/// nothing about it — that is exactly why this is testable without a browser.
+///
+/// The `None` terminator is in the fragment. `next` relates the last node to
+/// the interned `None` atom just like any other target, so the selector picks
+/// it up. Pinned deliberately: it is the kind of thing a reader would assume
+/// otherwise, and a change to how `Option` relationalizes should show up here.
+#[test]
+fn cyclic_fragment_membership_is_symmetric() {
+    if harness().is_none() {
+        return;
+    }
+
+    let ring = Ring {
+        val: 1,
+        next: Some(Box::new(Ring {
+            val: 2,
+            next: Some(Box::new(Ring { val: 3, next: None })),
+        })),
+    };
+    let datum = export_json_instance(&ring);
+    let (head, mid, tail) = (
+        nth_of_type(&datum, "Ring", 0),
+        nth_of_type(&datum, "Ring", 1),
+        nth_of_type(&datum, "Ring", 2),
+    );
+    let none = nth_of_type(&datum, "None", 0);
+
+    assert_conforms(case(
+        "cyclic",
+        &ring,
+        json!([
+            { "query": format!("cyclic({head})"), "equals": [&head, &mid, &tail, &none],
+              "because": "the fragment is every atom `next` reaches, including the None terminator" },
+            { "query": format!("cyclic({mid})"), "equals": [&head, &mid, &tail, &none],
+              "because": "membership is symmetric, so any member reports the same fragment" },
+        ]),
+    ));
+}
+
+// ──────────────────────────────────────────────
+// 7. Size
+// ──────────────────────────────────────────────
+
+#[derive(Serialize, SpytialDecorators)]
+#[size(selector = "Boxy", width = 120, height = 80)]
+struct Boxy {
+    val: u32,
+}
+
+/// A `size` constraint produces exactly the dimensions it asked for, so
+/// `sized(w, h)` matching those numbers is an entailment check rather than an
+/// observation about a particular render.
+///
+/// The `u32` field atom is unsized and must not match. That is the half worth
+/// asserting: a selector that widened to every atom would still satisfy the
+/// positive check on its own.
+#[test]
+fn size_applies_to_the_selected_atoms_only() {
+    if harness().is_none() {
+        return;
+    }
+
+    let boxy = Boxy { val: 7 };
+    let datum = export_json_instance(&boxy);
+    let root = nth_of_type(&datum, "Boxy", 0);
+    let field = nth_of_type(&datum, "u32", 0);
+
+    assert_conforms(case(
+        "size",
+        &boxy,
+        json!([
+            { "query": "sized(120, 80)", "equals": [&root],
+              "because": "the constraint selects Boxy and asks for exactly 120x80" },
+            { "query": "sized(120, 80)", "excludes": [&field],
+              "because": "the u32 field atom is auto-sized, so the selector must not reach it" },
+        ]),
+    ));
+}
+
+// ──────────────────────────────────────────────
+// 8. Hiding
+// ──────────────────────────────────────────────
+
+#[derive(Serialize, SpytialDecorators)]
+#[hide_atom(selector = "u32")]
+struct Hider {
+    val: u32,
+    tag: String,
+}
+
+/// Hiding is two facts, and only asserting both pins it.
+///
+/// `hidden()` reports what the directive selected, and `nodes()` no longer
+/// contains it — a hidden atom is genuinely out of the drawn graph rather than
+/// merely flagged. A regression that recorded the directive without applying
+/// it would still satisfy the first assertion.
+#[test]
+fn hidden_atoms_are_reported_and_removed_from_the_graph() {
+    if harness().is_none() {
+        return;
+    }
+
+    let hider = Hider {
+        val: 7,
+        tag: "t".into(),
+    };
+    let datum = export_json_instance(&hider);
+    let root = nth_of_type(&datum, "Hider", 0);
+    let number = nth_of_type(&datum, "u32", 0);
+    let text = nth_of_type(&datum, "string", 0);
+
+    assert_conforms(case(
+        "hide_atom",
+        &hider,
+        json!([
+            { "query": "hidden()", "equals": [&number],
+              "because": "the directive selects the u32 atom and nothing else" },
+            { "query": "nodes()", "equals": [&root, &text],
+              "because": "a hidden atom is out of the drawn graph, not just marked" },
         ]),
     ));
 }

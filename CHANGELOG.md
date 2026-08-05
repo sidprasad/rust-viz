@@ -33,9 +33,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   spec does *not* entail the whole left subtree is left of the root, that
   sharing a value through two fields yields two atoms (no pointer identity —
   only `bool`/`None`/`()`/unit structs/unit variants are interned), and that
-  `None` is interned across every empty slot. The harness resolves Node via
-  `SPYTIAL_NODE` then `PATH`, and skips rather than fails when Node or the
-  vendored bundle is absent.
+  `None` is interned across every empty slot. Also covers three decorator
+  families beyond orientation: `cyclic` (fragment membership is symmetric, and
+  includes the `None` terminator, since `next` relates to it like any other
+  target), `size` (the selected atom gets exactly the dimensions asked for, and
+  the unsized field atom does not), and `hide_atom` (the atom is both reported
+  by `hidden()` and gone from `nodes()`, so recording the directive without
+  applying it would not pass). The harness resolves Node via `SPYTIAL_NODE` then
+  `PATH`, and skips rather than fails when Node or the vendored bundle is absent.
 
 - Known issue, found by the above and filed as #88: the four `idx` emitters in
   `export.rs` write the position with `self.index.to_string()` and use it as a
@@ -51,10 +56,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   connectivity as a passing case, the selector gap as an `#[ignore]`d one that
   passes once the index atoms are emitted.
 
-- Changed: vendored spytial-core 4.3.0 → 4.4.1, which is the first release
-  carrying `dist/cli/spytial-check.js`. The layout-spec language itself did not
-  move (still dated 2026-07-29), so `macros/src/spec_tables.rs` changed only in
-  its version stamp and the derive macro's accepted keys are unchanged. The
+- Changed: vendored spytial-core 4.3.0 → 4.4.2. The CLI first shipped in 4.4.1,
+  and 4.4.2 added the `cyclic()`, `sized()` and `hidden()` spatial queries, which
+  is what lets the conformance tests cover the `cyclic`, `size` and `hide_atom`
+  decorators at all. The layout-spec language itself did not move across either
+  release (still dated 2026-07-29), so `macros/src/spec_tables.rs` changed only
+  in its version stamp and the derive macro's accepted keys are unchanged. The
   harness is vendored alongside the browser assets so it moves with the same
   `VERSION.txt` pin — a harness from one release checking specs written against
   another is the failure it exists to prevent — but it is the one file in
