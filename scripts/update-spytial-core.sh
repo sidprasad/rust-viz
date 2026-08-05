@@ -52,6 +52,7 @@ declare -a ASSETS=(
     "dist/components/react-component-integration.global.js:react-component-integration.global.js"
     "dist/components/react-component-integration.css:react-component-integration.css"
     "docs/spytial-language.json:spytial-language.json"
+    "dist/cli/spytial-check.js:spytial-check.js"
 )
 
 for pair in "${ASSETS[@]}"; do
@@ -61,6 +62,10 @@ for pair in "${ASSETS[@]}"; do
         if [[ "$src" == docs/* ]]; then
             echo "       The language manifest first shipped in 4.3.0; the spec" >&2
             echo "       tables cannot be generated from an earlier release." >&2
+        fi
+        if [[ "$src" == dist/cli/* ]]; then
+            echo "       The conformance CLI first shipped in 4.4.1; tests/conformance.rs" >&2
+            echo "       has nothing to run against an earlier release." >&2
         fi
         exit 1
     fi

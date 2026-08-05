@@ -24,6 +24,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   docs, which showed a concrete target type (`name(Person, string)`) that the
   exporter never emits — the target position is always the literal `"atom"`.
 
+- Added: `tests/conformance.rs`, which tests what a `SpytialDecorators` spec
+  *entails* rather than where anything is drawn (#87). Each case hands
+  spytial-core's conformance harness a datum, the spec, and the spatial facts
+  that should follow; `must.rightOf(a)` means "in every layout the spec
+  permits", so a case is deterministic and needs no browser. Covers
+  orientation transitivity along a linked list, the fact that a per-child tree
+  spec does *not* entail the whole left subtree is left of the root, that
+  sharing a value through two fields yields two atoms (no pointer identity —
+  only `bool`/`None`/`()`/unit structs/unit variants are interned), and that
+  `None` is interned across every empty slot. The harness resolves Node via
+  `SPYTIAL_NODE` then `PATH`, and skips rather than fails when Node or the
+  vendored bundle is absent.
+
+- Known issue, found by the above and filed as #88: the four `idx` emitters in
+  `export.rs` write the position with `self.index.to_string()` and use it as a
+  tuple atom id, but never emit an atom for it. Every `Vec`/array/slice, tuple,
+  tuple struct and tuple-like enum variant export therefore names atoms `"0"`,
+  `"1"`, … that are absent from `atoms` (`datum/dangling-tuple-atom`). Rendering
+  is unaffected — `JSONDataInstance` keeps the tuples as written, layout
+  generation succeeds, and every node and edge is present, because the index
+  sits in a ternary tuple's middle position which is never drawn as a node. What
+  it does break is selectors: the `index` type has no atoms, so nothing can join
+  through `idx` and a decorator relating a container to its elements silently
+  does nothing. Pinned from both sides in `tests/conformance.rs` — the graph
+  connectivity as a passing case, the selector gap as an `#[ignore]`d one that
+  passes once the index atoms are emitted.
+
+- Changed: vendored spytial-core 4.3.0 → 4.4.1, which is the first release
+  carrying `dist/cli/spytial-check.js`. The layout-spec language itself did not
+  move (still dated 2026-07-29), so `macros/src/spec_tables.rs` changed only in
+  its version stamp and the derive macro's accepted keys are unchanged. The
+  harness is vendored alongside the browser assets so it moves with the same
+  `VERSION.txt` pin — a harness from one release checking specs written against
+  another is the failure it exists to prevent — but it is the one file in
+  `templates/vendor/` excluded from the published crate, since it is 3.2 MB of
+  test-only code that would near-double the `.crate`.
+
 Repo hygiene, no behaviour change:
 
 - The derive macro's doc example never compiled. It needs `spytial`, which

@@ -8,7 +8,7 @@ works offline and without network access.
 To update, run the script — don't copy files by hand:
 
 ```bash
-scripts/update-spytial-core.sh 4.3.0
+scripts/update-spytial-core.sh 4.4.1
 ```
 
 It pulls the published tarball (a local `npm run build:all` produces the same bytes,
@@ -28,12 +28,13 @@ the two in step to begin with.
 | `react-component-integration.global.js` | `dist/components/react-component-integration.global.js` |
 | `react-component-integration.css` | `dist/components/react-component-integration.css` |
 | `spytial-language.json` | `docs/spytial-language.json` |
+| `spytial-check.js` | `dist/cli/spytial-check.js` |
 
 `.map` files are intentionally not vendored to keep the published crate small.
 
 ## `spytial-language.json`
 
-Unlike the four assets above, the manifest is never served to a browser. It is the
+Unlike the four browser assets, the manifest is never served to a browser. It is the
 machine-readable description of the layout-spec language — every constraint and
 directive, its fields, their closed vocabularies, numeric bounds, and which of them
 the engine actually rejects versus silently ignores (`enforcement`).
@@ -44,6 +45,26 @@ own description of the language rather than transcribed by hand. Bumping the ven
 version and forgetting to regenerate is caught by a test in that crate.
 
 First shipped in spytial-core 4.3.0; there is no equivalent file in 4.1.0 or earlier.
+
+## `spytial-check.js`
+
+The conformance harness, used by `tests/conformance.rs`. Like the manifest it is
+never served to a browser, and unlike the manifest it is not read by the build
+either: the test shells out to it with `node`, writes a case document on stdin, and
+parses the `RunResult` it writes back.
+
+It lives here rather than under `tests/` so it moves with the same `VERSION.txt` pin
+as everything else in this directory. A harness from one release checking specs
+written against another is the failure it exists to prevent — `RunResult` carries a
+`formatVersion` for the same reason, and the test asserts on it.
+
+It is the one file here excluded from the published crate (see `Cargo.toml`): 3.2 MB
+that would near-double the `.crate` for code no consumer runs. `tests/conformance.rs`
+skips when it is missing, so a `cargo test` from the published crate stays green.
+
+The bundle is self-contained — a single file any Node ≥16 can run, with no
+`node_modules` beside it. First shipped in spytial-core 4.4.1; 4.4.0 and earlier
+have no `dist/cli` at all.
 
 ## What we deliberately don't vendor
 

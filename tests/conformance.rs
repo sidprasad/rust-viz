@@ -1,0 +1,574 @@
+//! Conformance tests: what the decorators *entail*.
+//!
+//! `tests/export.rs` checks the shape of the datum — which atoms and relations
+//! come out of `export_json_instance`. This file checks the other half of the
+//! integration's job: that the spec a `SpytialDecorators` derive emits actually
+//! entails the spatial facts its author meant.
+//!
+//! A Spytial spec does not describe a picture, it describes a set of spatial
+//! relationships, and infinitely many drawings satisfy any one of them. So
+//! asserting on coordinates, or diffing screenshots, tests the force simulation
+//! rather than this crate — such a test fails when nothing is wrong and passes
+//! when something is. Instead each case here hands spytial-core's conformance
+//! harness a datum, the spec, and the facts that should follow; the harness
+//! solves the constraint graph and answers. Node positions do not exist at that
+//! stage, so a case is deterministic and needs no browser.
+//!
+//! `must.rightOf(a)` means *in every layout the spec permits*, not "where it
+//! landed this time". That is what makes these stable across machines.
+//!
+//! The harness is `templates/vendor/spytial-check.js`, pinned by `VERSION.txt`
+//! alongside the browser assets. Tests skip rather than fail when Node or the
+//! harness is unavailable, so `cargo test` stays green for contributors without
+//! Node and from the published crate, which excludes the harness. Set
+//! `SPYTIAL_NODE` to point at a specific Node binary.
+//!
+//! Docs: <https://sidprasad.github.io/spytial-core/#/testing-integrations>
+
+use serde::Serialize;
+use serde_json::{json, Value};
+use spytial::export_json_instance;
+use spytial::jsondata::JsonDataInstance;
+use spytial::spytial_annotations::{to_yaml, HasSpytialDecorators};
+use spytial::SpytialDecorators;
+use std::io::Write;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+
+// ──────────────────────────────────────────────
+// Harness plumbing
+// ──────────────────────────────────────────────
+
+/// The contract version this file was written against. The harness stamps every
+/// result with it, and the docs are explicit that a host should refuse a result
+/// whose version it does not recognize rather than guess at the shape — so a
+/// spytial-core bump that changes the case/result JSON surfaces here as one
+/// clear failure instead of a scatter of confusing assertion errors.
+const EXPECTED_FORMAT_VERSION: u64 = 1;
+
+/// Node to run the harness with: `SPYTIAL_NODE` if set, else `node` on `PATH`.
+///
+/// Unlike the Python integration this crate has no existing Node bridge to
+/// reuse, so resolution lives here. Returning `None` means skip, never fail:
+/// Node is not a build requirement of this crate and contributors without it
+/// should still get a green `cargo test`.
+fn node_binary() -> Option<String> {
+    if let Some(explicit) = std::env::var_os("SPYTIAL_NODE") {
+        let explicit = explicit.to_string_lossy().into_owned();
+        if Command::new(&explicit)
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            return Some(explicit);
+        }
+        // An explicit override that does not work is a mistake worth hearing
+        // about — falling back to `node` would silently test something other
+        // than what was asked for.
+        panic!("SPYTIAL_NODE is set to {explicit:?}, which is not a working Node binary");
+    }
+
+    Command::new("node")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .ok()
+        .filter(|s| s.success())
+        .map(|_| "node".to_string())
+}
+
+/// The vendored harness bundle. Absent from the published crate on purpose; see
+/// the `exclude` note in `Cargo.toml`.
+fn harness_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates/vendor/spytial-check.js")
+}
+
+/// Everything a run needs, or the reason there is nothing to run.
+fn harness() -> Option<(String, PathBuf)> {
+    let node = match node_binary() {
+        Some(node) => node,
+        None => {
+            eprintln!("SKIP: no Node on PATH and SPYTIAL_NODE unset");
+            return None;
+        }
+    };
+    let script = harness_path();
+    if !script.is_file() {
+        eprintln!("SKIP: {} is missing", script.display());
+        return None;
+    }
+    Some((node, script))
+}
+
+/// Feed a case document to `spytial-check` and return the parsed `RunResult`.
+///
+/// The exit code split that matters is 0/1 versus 2/3, not zero versus
+/// non-zero. On 0 (all passed) and 1 (some failed) the harness reached a
+/// verdict and stdout holds a `RunResult`; on 2 (bad usage or unreadable
+/// input) and 3 (timed out) it never got there and stdout is empty. Treating
+/// any non-zero code as "cases failed" would report a mistyped path, or a
+/// selector that does not terminate, as a spec that does not hold.
+fn run_cases(document: &Value) -> Value {
+    let (node, script) = match harness() {
+        Some(found) => found,
+        None => unreachable!("callers check `harness()` before building a document"),
+    };
+
+    let mut child = Command::new(&node)
+        .arg(&script)
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|err| panic!("could not spawn {node} {}: {err}", script.display()));
+
+    let payload = serde_json::to_vec(document).expect("case document must serialize");
+    child
+        .stdin
+        .take()
+        .expect("stdin was piped")
+        .write_all(&payload)
+        .expect("harness closed stdin early");
+
+    let out = child.wait_with_output().expect("harness did not run");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    let result: Value = match out.status.code() {
+        // A verdict was reached; stdout is the RunResult either way.
+        Some(0) | Some(1) => serde_json::from_slice(&out.stdout).unwrap_or_else(|err| {
+            panic!(
+                "spytial-check exited {} but stdout was not JSON: {err}\nstdout: {}\nstderr: {stderr}",
+                out.status.code().unwrap(),
+                String::from_utf8_lossy(&out.stdout),
+            )
+        }),
+        // 2 = bad usage or unreadable input, 3 = timed out. Neither is a
+        // statement about the spec.
+        Some(code) => panic!("spytial-check could not run (exit {code}): {stderr}"),
+        None => panic!("spytial-check was killed by a signal: {stderr}"),
+    };
+
+    let format_version = result["formatVersion"].as_u64();
+    assert_eq!(
+        format_version,
+        Some(EXPECTED_FORMAT_VERSION),
+        "conformance format version changed (vendored spytial-core {}); \
+         re-read the case/result contract before trusting these tests",
+        result["spytialCoreVersion"].as_str().unwrap_or("unknown"),
+    );
+
+    result
+}
+
+/// Build one case out of a value and the spec its type's derive emits.
+///
+/// `JsonDataInstance` derives `Serialize`, so the datum drops in with no
+/// conversion — the harness sees exactly the bytes spytial-core would.
+fn case<T>(name: &str, value: &T, assertions: Value) -> Value
+where
+    T: Serialize + HasSpytialDecorators,
+{
+    json!({
+        "name": name,
+        "datum": export_json_instance(value),
+        "spec": to_yaml(&T::decorators()).expect("decorators must serialize to YAML"),
+        "assertions": assertions,
+    })
+}
+
+/// Same as [`case`], but turns off spytial-core's datum well-formedness check.
+///
+/// Only for a case whose point is selector behaviour on a value whose datum is
+/// known-malformed for an unrelated reason. Today that means anything holding a
+/// `Vec`, array, tuple, tuple struct or tuple-like enum variant: all of them
+/// trip #88, and the datum error would otherwise mask what the case is about.
+/// Reach for this only with an issue to point at — the check is most of the
+/// value of the harness.
+fn case_skipping_datum_check<T>(name: &str, value: &T, assertions: Value) -> Value
+where
+    T: Serialize + HasSpytialDecorators,
+{
+    let mut case = case(name, value, assertions);
+    case["skipDatumCheck"] = json!(true);
+    case
+}
+
+/// Run one case and assert it passed, rendering any failure so a red test
+/// explains itself without a rerun.
+fn assert_conforms(case: Value) {
+    let result = run_cases(&json!({ "cases": [case] }));
+    let case_result = &result["cases"][0];
+    if case_result["ok"] == json!(true) {
+        return;
+    }
+    panic!("{}", describe_failure(case_result));
+}
+
+/// Turn a failed `CaseResult` into something readable.
+fn describe_failure(case_result: &Value) -> String {
+    let mut report = format!(
+        "conformance case {} failed\n",
+        case_result["name"].as_str().unwrap_or("<unnamed>")
+    );
+
+    for diagnostic in case_result["errors"].as_array().into_iter().flatten() {
+        report.push_str(&format!(
+            "  error [{}] {}",
+            diagnostic["code"].as_str().unwrap_or("?"),
+            diagnostic["message"].as_str().unwrap_or("?"),
+        ));
+        if let Some(where_) = diagnostic["where"].as_str() {
+            report.push_str(&format!("\n        at {where_}"));
+        }
+        report.push('\n');
+    }
+
+    for assertion in case_result["assertions"].as_array().into_iter().flatten() {
+        if assertion["ok"] == json!(true) {
+            continue;
+        }
+        report.push_str(&format!(
+            "  failed {}\n         {}\n",
+            assertion["query"].as_str().unwrap_or("?"),
+            assertion["message"].as_str().unwrap_or("(no detail)"),
+        ));
+        if let Some(because) = assertion["because"].as_str() {
+            report.push_str(&format!("         expected because {because}\n"));
+        }
+    }
+
+    report
+}
+
+/// The id of the `n`th atom of a given type, in export order.
+///
+/// Atom ids are a bare counter, so `atom4` says nothing about which value it
+/// is and shifts the moment a field is added. Naming the atom by what it is
+/// keeps a case readable and keeps an unrelated edit from silently changing
+/// what it asserts.
+fn nth_of_type(datum: &JsonDataInstance, ty: &str, n: usize) -> String {
+    let mut matching = datum.atoms.iter().filter(|a| a.r#type == ty);
+    matching.nth(n).map(|a| a.id.clone()).unwrap_or_else(|| {
+        let seen: Vec<&str> = datum.atoms.iter().map(|a| a.r#type.as_str()).collect();
+        panic!("no {n}th atom of type {ty:?}; types present: {seen:?}")
+    })
+}
+
+// ──────────────────────────────────────────────
+// 1. Orientation is transitive along a linked list
+// ──────────────────────────────────────────────
+
+#[derive(Serialize, SpytialDecorators)]
+#[orientation(selector = "{x : Node, y : Node | x.next = y}", directions = ["right"])]
+struct Node {
+    val: u32,
+    next: Option<Box<Node>>,
+}
+
+fn three_node_list() -> Node {
+    Node {
+        val: 1,
+        next: Some(Box::new(Node {
+            val: 2,
+            next: Some(Box::new(Node { val: 3, next: None })),
+        })),
+    }
+}
+
+#[test]
+fn list_orientation_carries_down_the_whole_tail() {
+    if harness().is_none() {
+        return;
+    }
+
+    let list = three_node_list();
+    let datum = export_json_instance(&list);
+    let (head, mid, tail) = (
+        nth_of_type(&datum, "Node", 0),
+        nth_of_type(&datum, "Node", 1),
+        nth_of_type(&datum, "Node", 2),
+    );
+
+    assert_conforms(case(
+        "linked list",
+        &list,
+        json!([
+            { "query": format!("must.rightOf({head})"), "contains": [&mid, &tail],
+              "because": "orientation is transitive, so the whole tail is right of the head" },
+            { "query": format!("must.leftOf({tail})"), "contains": [&head, &mid],
+              "because": "the mirror of the same constraint" },
+            { "query": format!("must.above({head})"), "empty": true,
+              "because": "the spec orders horizontally only — nothing is entailed vertically" },
+        ]),
+    ));
+}
+
+// ──────────────────────────────────────────────
+// 2. What a per-child spec does *not* say
+// ──────────────────────────────────────────────
+
+#[derive(Serialize, SpytialDecorators)]
+#[orientation(selector = "{x : Tree, y : Tree | x.left = y}", directions = ["left", "below"])]
+#[orientation(selector = "{x : Tree, y : Tree | x.right = y}", directions = ["right", "below"])]
+struct Tree {
+    val: u32,
+    left: Option<Box<Tree>>,
+    right: Option<Box<Tree>>,
+}
+
+/// A root whose left child has a right child — the shape where the intuition
+/// "the left subtree is on the left" comes apart.
+fn lopsided_tree() -> Tree {
+    Tree {
+        val: 0,
+        left: Some(Box::new(Tree {
+            val: 1,
+            left: None,
+            right: Some(Box::new(Tree {
+                val: 2,
+                left: None,
+                right: None,
+            })),
+        })),
+        right: Some(Box::new(Tree {
+            val: 3,
+            left: None,
+            right: None,
+        })),
+    }
+}
+
+#[test]
+fn tree_spec_does_not_constrain_a_grandchild_against_the_root() {
+    if harness().is_none() {
+        return;
+    }
+
+    let tree = lopsided_tree();
+    let datum = export_json_instance(&tree);
+    // Export order is root, left child, that child's right child, right child.
+    let root = nth_of_type(&datum, "Tree", 0);
+    let left_child = nth_of_type(&datum, "Tree", 1);
+    let left_grandchild = nth_of_type(&datum, "Tree", 2);
+    let right_child = nth_of_type(&datum, "Tree", 3);
+
+    assert_conforms(case(
+        "binary tree",
+        &tree,
+        json!([
+            { "query": format!("must.leftOf({root})"), "contains": [&left_child],
+              "because": "the left child is constrained directly against the root" },
+            { "query": format!("must.rightOf({root})"), "contains": [&right_child],
+              "because": "and the right child likewise" },
+
+            // The point of the case. A left-child's right-child is constrained
+            // against its own parent and nothing else, so the spec permits it
+            // landing right of the root. A rendered drawing usually hides that;
+            // `must.leftOf` does not. Pinned so a change in decorator semantics
+            // shows up here rather than as a surprising diagram.
+            { "query": format!("must.leftOf({root})"), "excludes": [&left_grandchild],
+              "because": "nothing relates it to the root, so the whole left subtree is not entailed left" },
+
+            { "query": format!("must.below({root})"), "contains": [&left_child, &right_child],
+              "because": "both directions carry `below`, which the root does constrain" },
+        ]),
+    ));
+}
+
+// ──────────────────────────────────────────────
+// 3. Identity across sharing
+// ──────────────────────────────────────────────
+
+#[derive(Serialize, SpytialDecorators)]
+struct Leaf {
+    tag: String,
+}
+
+#[derive(Serialize, SpytialDecorators)]
+struct Shared<'a> {
+    a: &'a Leaf,
+    b: &'a Leaf,
+}
+
+/// Sharing is *not* collapsed, and that is deliberate.
+///
+/// Ids are a counter, and only genuine singletons — `bool`, `None`, `()`, unit
+/// structs, unit variants — are interned. There is no pointer identity, so one
+/// `Leaf` reachable through two fields is walked twice and comes out as two
+/// atoms with two `tag` values: five atoms, not three.
+///
+/// Nothing about the datum's *shape* can catch a change here — both the shared
+/// and the duplicated version are well-formed graphs — so a count assertion is
+/// the only thing that pins it. Worth pinning because the alternative is a
+/// silent switch between drawing a DAG and drawing a tree.
+///
+/// (`Rc`/`Arc` cannot stand in for `&`: they only implement `Serialize` under
+/// serde's `rc` feature, which this crate does not enable, and serde documents
+/// that even then the pointee is serialized once per reference.)
+#[test]
+fn sharing_a_value_through_two_fields_yields_two_atoms() {
+    if harness().is_none() {
+        return;
+    }
+
+    let leaf = Leaf {
+        tag: "shared".into(),
+    };
+    let shared = Shared { a: &leaf, b: &leaf };
+
+    assert_conforms(case(
+        "shared leaf",
+        &shared,
+        json!([
+            { "query": "nodes()", "count": 5,
+              "because": "one Shared, plus a Leaf and a tag string per field — sharing is not collapsed" },
+        ]),
+    ));
+}
+
+// ──────────────────────────────────────────────
+// 4. Option
+// ──────────────────────────────────────────────
+
+/// `None` is interned, so every empty slot in the tree is the same atom — the
+/// one place this crate *does* collapse, and the counterpart to the case above.
+#[test]
+fn none_is_interned_across_every_empty_slot() {
+    if harness().is_none() {
+        return;
+    }
+
+    let tree = lopsided_tree();
+    let datum = export_json_instance(&tree);
+    assert_eq!(
+        datum.atoms.iter().filter(|a| a.r#type == "None").count(),
+        1,
+        "the five empty child slots should share one None atom",
+    );
+
+    assert_conforms(case(
+        "option",
+        &tree,
+        json!([
+            { "query": format!("must.leftOf({})", nth_of_type(&datum, "None", 0)), "empty": true,
+              "because": "None is a leaf of the selectors, never a Tree, so nothing is entailed about it" },
+        ]),
+    ));
+}
+
+// ──────────────────────────────────────────────
+// 5. Vec
+// ──────────────────────────────────────────────
+//
+// A `Vec` field does not relationalize to its elements directly. It goes
+// through an intermediate `sequence` atom and a *ternary* relation,
+// `idx(sequence, index, element)`. That indirection is where a selector is
+// most likely to miss, so both halves are pinned: what does work today, and
+// what does not.
+
+#[derive(Serialize, SpytialDecorators)]
+struct Row {
+    items: Vec<Item>,
+}
+
+#[derive(Serialize, SpytialDecorators)]
+#[orientation(selector = "{x : Bag, y : Item | y in x.items.idx[index]}", directions = ["below"])]
+struct Bag {
+    items: Vec<Item>,
+}
+
+#[derive(Serialize, SpytialDecorators)]
+struct Item {
+    n: u32,
+}
+
+/// The graph a `Vec` produces is correctly connected: the sequence atom joins
+/// the container on one side and every element on the other, so the diagram a
+/// user sees is right.
+///
+/// This is the counterweight to the test below. #88 makes the elements
+/// unreachable *to a selector*, which is easy to misread as "`Vec` rendering is
+/// broken". It is not, and this pins the difference — the sequence atom is a
+/// real node with real edges either way.
+///
+/// The datum check is off because every `Vec` trips #88; that is the subject of
+/// the next test, not this one.
+#[test]
+fn vec_connects_its_container_to_its_elements() {
+    if harness().is_none() {
+        return;
+    }
+
+    let row = Row {
+        items: vec![Item { n: 1 }, Item { n: 2 }],
+    };
+    let datum = export_json_instance(&row);
+    let root = nth_of_type(&datum, "Row", 0);
+    let sequence = nth_of_type(&datum, "sequence", 0);
+    let (first, second) = (
+        nth_of_type(&datum, "Item", 0),
+        nth_of_type(&datum, "Item", 1),
+    );
+
+    assert_conforms(case_skipping_datum_check(
+        "vec graph",
+        &row,
+        json!([
+            { "query": format!("edges({sequence})"), "contains": [&root, &first, &second],
+              "because": "the sequence atom is joined to the Row by `items` and to both Items by `idx`" },
+        ]),
+    ));
+}
+
+/// Reaching a `Vec`'s elements *through the container* does not work, and
+/// cannot be made to work by choosing a better selector.
+///
+/// The `idx` emitters in `export.rs` write the position with
+/// `self.index.to_string()` and use it as a tuple atom id, but never emit an
+/// atom for it. The `index` type therefore has no atoms, and no selector can
+/// join through `idx` — `x.items = y`, `y in x.items.idx`,
+/// `y in x.items.idx[index]` and `y in x.items.idx[univ]` all match nothing.
+/// The same four emitters cover `Vec`/array/slice, tuples, tuple structs and
+/// tuple-like enum variants, so this is not `Vec`-specific.
+///
+/// Rendering is unaffected. `JSONDataInstance` keeps the tuples as written,
+/// layout generation succeeds, and every node and edge is present — the index
+/// sits in a ternary tuple's middle position, which is never drawn as a node.
+/// What breaks is only that a decorator relating a container to its elements,
+/// or using position, silently does nothing.
+///
+/// Tracked in <https://github.com/sidprasad/spytial-rust/issues/88>. Ignored
+/// rather than deleted: it is the executable statement of what should hold,
+/// and it passes as written once the index atoms are emitted (verified by
+/// hand-patching the datum). Run with `cargo test -- --ignored`.
+#[test]
+#[ignore = "blocked on #88: idx names index atoms that are never declared"]
+fn vec_elements_are_reachable_through_the_index() {
+    if harness().is_none() {
+        return;
+    }
+
+    let bag = Bag {
+        items: vec![Item { n: 1 }, Item { n: 2 }],
+    };
+    let datum = export_json_instance(&bag);
+    let root = nth_of_type(&datum, "Bag", 0);
+    let (first, second) = (
+        nth_of_type(&datum, "Item", 0),
+        nth_of_type(&datum, "Item", 1),
+    );
+
+    assert_conforms(case(
+        "vec",
+        &bag,
+        json!([
+            { "query": format!("must.below({root})"), "contains": [&first, &second],
+              "because": "both elements are joined to the bag through idx, so both are entailed below it" },
+        ]),
+    ));
+}
