@@ -51,6 +51,13 @@ exclude = [
     "eval-corpus/",
     "spec-codegen/",
     "scripts/",
+    # The conformance harness is test-only: tests/conformance.rs shells out to
+    # it, nothing in `src/` reads it. The rest of templates/vendor is bundled
+    # into the rendered page by `include_str!` and has to ship; this one file is
+    # 3.2 MB that would otherwise near-double the published crate for code no
+    # consumer runs. tests/conformance.rs skips when it is absent, which is
+    # exactly what a consumer building from the published crate sees.
+    "templates/vendor/spytial-check.js",
 ]
 
 [dependencies]
