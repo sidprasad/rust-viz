@@ -8,7 +8,7 @@ works offline and without network access.
 To update, run the script — don't copy files by hand:
 
 ```bash
-scripts/update-spytial-core.sh 4.4.1
+scripts/update-spytial-core.sh 4.4.2
 ```
 
 It pulls the published tarball (a local `npm run build:all` produces the same bytes,
@@ -65,6 +65,12 @@ skips when it is missing, so a `cargo test` from the published crate stays green
 The bundle is self-contained — a single file any Node ≥16 can run, with no
 `node_modules` beside it. First shipped in spytial-core 4.4.1; 4.4.0 and earlier
 have no `dist/cli` at all.
+
+The query vocabulary it answers grows with the release, so the pin sets what the
+tests can ask about. 4.4.2 added `cyclic()`, `sized()` and `hidden()`, which is what
+lets `tests/conformance.rs` cover the `cyclic`, `size` and `hide_atom` decorators at
+all. Downgrading below it is loud rather than silent: those queries come back as
+`Unrecognized spatial query`, failing the case instead of passing vacuously.
 
 ## What we deliberately don't vendor
 
