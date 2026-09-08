@@ -1,5 +1,5 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 use std::sync::Mutex;
 
@@ -41,6 +41,21 @@ pub struct SpytialDecorators {
     pub constraints: Vec<Constraint>,
     /// Visual/behavioral directives (color, size, icon, edges, tags, flags, etc.).
     pub directives: Vec<Directive>,
+}
+
+impl SpytialDecorators {
+    pub(crate) fn extend_unique(&mut self, other: Self) {
+        for constraint in other.constraints {
+            if !self.constraints.contains(&constraint) {
+                self.constraints.push(constraint);
+            }
+        }
+        for directive in other.directives {
+            if !self.directives.contains(&directive) {
+                self.directives.push(directive);
+            }
+        }
+    }
 }
 
 /// A layout/structural constraint on the diagram.
@@ -725,6 +740,39 @@ pub trait HasSpytialDecorators {
     fn decorators() -> SpytialDecorators;
 }
 
+/// One derive-generated entry in the link-time decorator registry.
+///
+/// This is public only so [`SpytialDecorators`](spytial_export_macros::SpytialDecorators)
+/// expansions in downstream crates can submit entries. Applications should
+/// not construct registrations directly.
+#[doc(hidden)]
+pub struct DecoratorRegistration {
+    rust_type_name: &'static str,
+    serialized_type_name: &'static str,
+    decorators: fn() -> SpytialDecorators,
+    nested_type_names: &'static [&'static str],
+}
+
+impl DecoratorRegistration {
+    /// Construct a derive-generated registration.
+    #[doc(hidden)]
+    pub const fn new(
+        rust_type_name: &'static str,
+        serialized_type_name: &'static str,
+        decorators: fn() -> SpytialDecorators,
+        nested_type_names: &'static [&'static str],
+    ) -> Self {
+        Self {
+            rust_type_name,
+            serialized_type_name,
+            decorators,
+            nested_type_names,
+        }
+    }
+}
+
+inventory::collect!(DecoratorRegistration);
+
 impl<T: HasSpytialDecorators + ?Sized> HasSpytialDecorators for &T {
     fn decorators() -> SpytialDecorators {
         T::decorators()
@@ -794,15 +842,55 @@ pub fn register_type_decorators(type_name: &str, decorators: SpytialDecorators) 
     registry.insert(type_name.to_string(), decorators);
 }
 
-/// Look up previously-registered decorators for `type_name`, if any.
+/// Look up decorators for `type_name`, if any.
 ///
-/// Returns `None` if the type has never had its `decorators()` method called
-/// (and therefore never registered itself with the global registry).
+/// Explicit runtime registrations take precedence. Otherwise this resolves
+/// derive-generated link-time registrations, including their nested types.
+/// Returns `None` only when no matching type has been registered.
 pub fn get_type_decorators(type_name: &str) -> Option<SpytialDecorators> {
-    let registry = TYPE_REGISTRY
+    let explicitly_registered = TYPE_REGISTRY
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    registry.get(type_name).cloned()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(type_name)
+        .cloned();
+
+    explicitly_registered.or_else(|| get_linked_type_decorators(type_name))
+}
+
+fn get_linked_type_decorators(type_name: &str) -> Option<SpytialDecorators> {
+    fn collect(
+        type_name: &str,
+        visited: &mut HashSet<&'static str>,
+        decorators: &mut SpytialDecorators,
+    ) -> bool {
+        if visited.contains(type_name) {
+            return false;
+        }
+
+        let mut found = false;
+        let mut nested_type_names = Vec::new();
+        for registration in inventory::iter::<DecoratorRegistration> {
+            if registration.rust_type_name != type_name
+                && registration.serialized_type_name != type_name
+            {
+                continue;
+            }
+
+            found = true;
+            visited.insert(registration.rust_type_name);
+            visited.insert(registration.serialized_type_name);
+            decorators.extend_unique((registration.decorators)());
+            nested_type_names.extend_from_slice(registration.nested_type_names);
+        }
+        for nested_type_name in nested_type_names {
+            collect(nested_type_name, visited, decorators);
+        }
+        found
+    }
+
+    let mut decorators = SpytialDecorators::default();
+    let mut visited = HashSet::new();
+    collect(type_name, &mut visited, &mut decorators).then_some(decorators)
 }
 
 /// Serialize a [`SpytialDecorators`] value to its YAML wire format.

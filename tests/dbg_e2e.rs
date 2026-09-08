@@ -9,6 +9,7 @@
 use serde::Serialize;
 use spytial::export::try_export_json_instance;
 use spytial::{dbg, diagram, export_json_instance, SpytialDecorators};
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -16,6 +17,30 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread;
 use std::time::SystemTime;
+
+#[derive(Debug, Serialize)]
+struct UndecoratedUser {
+    name: String,
+}
+
+#[derive(Debug, Serialize, SpytialDecorators)]
+#[serde(rename = "SerializedRegisteredChild")]
+#[attribute(field = "nested_registration_marker")]
+struct RegisteredChild {
+    nested_registration_marker: String,
+}
+
+#[derive(Debug, Serialize, SpytialDecorators)]
+#[serde(rename(
+    serialize = "SerializedRegisteredParent",
+    deserialize = "RegisteredParent"
+))]
+#[hide_field(field = "parent_registration_marker")]
+#[hide_atom(selector = "ROOT_REGISTRATION_SELECTOR")]
+struct RegisteredParent {
+    parent_registration_marker: String,
+    child: Option<RegisteredChild>,
+}
 
 /// Suppress browser launch for every test in this file. `SPYTIAL_NO_OPEN`
 /// is read by the `diagram` implementation; setting it to "1" makes the
@@ -73,6 +98,77 @@ fn dbg_returns_value() {
     let _guard = diagram_lock();
     let y = dbg!(W(42));
     assert_eq!(y.0, 42, "dbg!(W(42)) must return the value through");
+}
+
+#[test]
+fn dbg_accepts_direct_vec_and_hash_map_values() {
+    suppress_browser_open();
+
+    let _guard = diagram_lock();
+    let values = vec![1, 2, 3];
+    let returned_values = dbg!(&values);
+    assert_eq!(returned_values, &vec![1, 2, 3]);
+
+    let users = HashMap::from([("Ada", 1), ("Grace", 2)]);
+    let returned_users = dbg!(&users);
+    assert_eq!(returned_users.get("Ada"), Some(&1));
+    assert_eq!(returned_users.get("Grace"), Some(&2));
+}
+
+#[test]
+fn undecorated_user_type_works_with_dbg_and_diagram() {
+    suppress_browser_open();
+
+    let value = UndecoratedUser {
+        name: "Ada".to_string(),
+    };
+    let target = unique_output_path("undecorated");
+
+    let _guard = diagram_lock();
+    env::set_var("SPYTIAL_OUTPUT_PATH", &target);
+    let borrowed = dbg!(&value);
+    assert_eq!(borrowed.name, "Ada");
+    diagram(&value);
+    let read_result = fs::read_to_string(&target);
+    env::remove_var("SPYTIAL_OUTPUT_PATH");
+    drop(_guard);
+
+    let contents = read_result.expect("diagram() should render an undecorated Serialize value");
+    assert!(contents.contains("UndecoratedUser"));
+    assert!(contents.contains("Ada"));
+    let _ = fs::remove_file(&target);
+}
+
+#[test]
+fn diagram_applies_registered_root_and_nested_decorators() {
+    suppress_browser_open();
+
+    // Keep the child absent: transitive collection must come from the type
+    // registration rather than happening accidentally while serializing a
+    // child value.
+    let value = RegisteredParent {
+        parent_registration_marker: "present".to_string(),
+        child: None,
+    };
+    let target = unique_output_path("registered-decorators");
+
+    let _guard = diagram_lock();
+    env::set_var("SPYTIAL_OUTPUT_PATH", &target);
+    diagram(&value);
+    let read_result = fs::read_to_string(&target);
+    env::remove_var("SPYTIAL_OUTPUT_PATH");
+    drop(_guard);
+
+    let contents = read_result.expect("diagram() should render a decorated value");
+    assert!(
+        contents.contains("ROOT_REGISTRATION_SELECTOR"),
+        "the root type's registered decorator should be embedded"
+    );
+    assert!(
+        contents.contains("nested_registration_marker"),
+        "the absent nested type's decorator should be collected transitively"
+    );
+    let _ = fs::remove_file(&target);
 }
 
 // ──────────────────────────────────────────────
@@ -233,6 +329,7 @@ fn diagram_writes_html_file() {
     suppress_browser_open();
 
     #[derive(Debug, Serialize, SpytialDecorators)]
+    #[hide_atom(selector = "LOCAL_DERIVE_REGISTRATION_SELECTOR")]
     struct Marker {
         unique_marker_field: String,
     }
@@ -275,6 +372,10 @@ fn diagram_writes_html_file() {
         contents.contains("Marker"),
         "rendered HTML at {} should reference the struct type name",
         target.display(),
+    );
+    assert!(
+        contents.contains("LOCAL_DERIVE_REGISTRATION_SELECTOR"),
+        "a derive on a function-local type should still register decorators",
     );
 
     // Best-effort cleanup.

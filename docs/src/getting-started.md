@@ -54,11 +54,13 @@ Two things happen:
    exactly what `std::dbg!` would have printed.
 2. A browser tab opens with the rendered tree.
 
-The three derives are the whole contract: `Debug` (already required by
-`std::dbg!`), plus `Serialize` and `SpytialDecorators`. The single
-`#[attribute(field = "key")]` decorator promotes each node's `key` into
-its label; without it the nodes would be anonymous. The next page,
-[Decorators](./decorators.md), covers the rest.
+The minimum contract is `Debug` (already required by `std::dbg!`) plus
+`Serialize`. That is enough for user-defined values and direct collections
+such as `Vec` and `HashMap` to get an automatic structural diagram.
+`SpytialDecorators` is optional enrichment: in this example its
+`#[attribute(field = "key")]` rule promotes each node's `key` into its label.
+Without that rule the diagram still renders, but the nodes are anonymous. The
+next page, [Decorators](./decorators.md), covers the rest.
 
 ## The two entry points
 
@@ -68,9 +70,10 @@ its label; without it the nodes would be anonymous. The next page,
 | `diagram(&x)` | No stderr, no source location, doesn't move `x`. Use it in library code or anywhere you don't want debug noise. |
 
 Decorators on a type apply automatically wherever a value of that type
-appears inside another decorated type — the derive walks `Vec<T>`,
-`Option<T>`, `Box<T>`, and their nested combinations at compile time. You
-never register nested types anywhere.
+appears inside another type — derive-generated link-time registrations follow
+`Vec<T>`, `Option<T>`, `Box<T>`, and their nested combinations. You never
+register nested types yourself, and an undecorated outer value does not block
+decorators on values inside it.
 
 ## Where the file lives
 

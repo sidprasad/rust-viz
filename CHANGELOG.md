@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Changed: `spytial::dbg!` now accepts any `Debug + Serialize` value and
+  `diagram()` accepts any `Serialize` value; `SpytialDecorators` is optional
+  enrichment rather than a gate (#91). Derives submit their own rules and
+  nested type names to a link-time registry, so existing decorated types still
+  apply root and transitive nested decorators automatically while direct
+  `Vec`, `HashMap`, third-party, and undecorated user values render with the
+  default structural layout. Serde-renamed types are registered under both
+  their Rust and serialized names. The runtime remains offline and
+  best-effort, and the public `dbg!` evaluation/return/stderr behavior is
+  unchanged.
+
 - Fixed: a relation's type signature is no longer frozen by whichever tuple
   arrived first (#79). Relations are keyed by name in one flat namespace, so
   two structs with a same-named field share one relation; its header `types`

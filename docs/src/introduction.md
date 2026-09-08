@@ -56,7 +56,9 @@ fn main() {
 
 `cargo run` prints the usual `dbg!` line to your terminal and opens the
 tree in your browser. [Getting started](./getting-started.md) walks
-through the same example line by line.
+through the same example line by line. The `SpytialDecorators` derive and
+`#[attribute]` are optional: any `Debug + Serialize` value gets a structural
+diagram, and these additions make that diagram more informative.
 
 ## Shape the layout with decorators
 
@@ -71,8 +73,8 @@ hidden:
 #[orientation(selector = "{x, y : Node | x->y in right}", directions = ["right", "below"])]
 ```
 
-Decorators are collected at compile time across nested types, so you
-decorate `Node` once and every `Node` in the value picks up the rules.
+Decorators are registered at link time and collected across nested types, so
+you decorate `Node` once and every `Node` in the value picks up the rules.
 See [Decorators](./decorators.md) for the full reference and a red-black
 tree built up one rule at a time.
 
@@ -81,9 +83,11 @@ tree built up one rule at a time.
 Three steps, all built into the crate, so diagrams work offline with no
 network calls:
 
-1. `#[derive(SpytialDecorators)]` collects your decorators at compile time.
-2. `diagram(&value)` walks the value through serde into atoms and relations.
-3. That data and your decorators fill a self-contained HTML template,
+1. `diagram(&value)` walks any `Serialize` value through serde into atoms and
+   relations.
+2. If a type derives `SpytialDecorators`, its link-time registration contributes
+   layout and styling rules automatically, including rules from nested types.
+3. That data and any decorators fill a self-contained HTML template,
    rendered in the browser by a bundled copy of
    [spytial-core](https://github.com/sidprasad/spytial-core).
 

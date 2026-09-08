@@ -17,7 +17,8 @@ diagram(&tree);
 Renders the value, writes to a temp file, opens a browser tab. Every step
 is best-effort: any failure is printed to stderr and swallowed, and the
 function returns `()`. No source location, and it borrows rather than
-moves.
+moves. Any `Serialize` value works. A `SpytialDecorators` derive is detected
+automatically when present, but is not required.
 
 ## `diagram_with_spec(&value, spec)` — hand-written constraints
 
@@ -37,10 +38,10 @@ diagram_with_spec(&tree, spec);
 ```
 
 Same diagram-and-browser flow, but with a YAML spec you assemble yourself,
-bypassing the derive-generated decorators on `T`. Useful for a type you
-can't add a derive to, for overriding the derive output for one call, or
-for generating the spec from configuration. The YAML schema is the one the
-`SpytialDecorators` derive emits — see [Decorators](./decorators.md).
+bypassing any derive-generated decorators on `T`. Useful for adding rules to
+a standard-library or third-party type, overriding the derive output for one
+call, or generating the spec from configuration. The YAML schema is the one
+the `SpytialDecorators` derive emits — see [Decorators](./decorators.md).
 
 ## `export_json_instance(&value)` — capture the data, render nothing
 

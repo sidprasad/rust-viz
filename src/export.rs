@@ -103,6 +103,35 @@ pub fn try_export_json_instance<T: Serialize>(
     })
 }
 
+/// Export a value together with all derive-registered decorators reachable
+/// from the serialized type graph.
+pub(crate) fn export_json_instance_and_decorators<T: Serialize>(
+    value: &T,
+) -> (JsonDataInstance, SpytialDecorators) {
+    let mut serializer = JsonDataSerializer::new();
+    if let Err(err) = value.serialize(&mut serializer) {
+        eprintln!(
+            "spytial: serialization failed, returning empty instance: {}",
+            err.message()
+        );
+        return (
+            JsonDataInstance {
+                atoms: Vec::new(),
+                relations: Vec::new(),
+            },
+            SpytialDecorators::default(),
+        );
+    }
+
+    (
+        JsonDataInstance {
+            atoms: serializer.atoms,
+            relations: finalize_relations(serializer.relations),
+        },
+        serializer.collected_decorators,
+    )
+}
+
 /// Export a Rust data structure and collect SpyTial decorators from all encountered types.
 /// Excludes the root type from collection to avoid double-counting.
 ///
@@ -226,10 +255,9 @@ impl JsonDataSerializer {
     /// Merge decorators for `type_name` into the collected set, if it has any
     /// registered and we haven't already visited it this run.
     ///
-    /// Types register themselves at first call to `T::decorators()`, which the
-    /// derive macro emits as part of the compile-time decorator walk. So by the
-    /// time a value's `Serialize` impl visits a struct, the registry should
-    /// already contain that struct's entry (when one exists).
+    /// Derives submit registrations at link time, so a value's `Serialize`
+    /// implementation can discover decorators without a
+    /// `HasSpytialDecorators` bound on the root value.
     fn collect_decorators_for_type(&mut self, type_name: &str) {
         if let Some(ref exclude) = self.exclude_type {
             if type_name == exclude {
@@ -242,12 +270,7 @@ impl JsonDataSerializer {
         }
 
         if let Some(type_decorators) = crate::spytial_annotations::get_type_decorators(type_name) {
-            self.collected_decorators
-                .constraints
-                .extend(type_decorators.constraints);
-            self.collected_decorators
-                .directives
-                .extend(type_decorators.directives);
+            self.collected_decorators.extend_unique(type_decorators);
         }
     }
 }
@@ -405,6 +428,7 @@ impl<'a> Serializer for &'a mut JsonDataSerializer {
 
     fn serialize_unit_struct(self, name: &str) -> Result<Self::Ok, Self::Error> {
         // Unit structs are singletons - only one instance of each unit struct type exists
+        self.collect_decorators_for_type(name);
         Ok(self.get_or_create_singleton("unit_struct", name))
     }
 
@@ -415,6 +439,7 @@ impl<'a> Serializer for &'a mut JsonDataSerializer {
         variant: &str,
     ) -> Result<Self::Ok, Self::Error> {
         // Unit variants are singletons: Color::Red is always the same value.
+        self.collect_decorators_for_type(enum_name);
         Ok(self.get_or_create_singleton(enum_name, variant))
     }
 
@@ -423,6 +448,7 @@ impl<'a> Serializer for &'a mut JsonDataSerializer {
         name: &str,
         value: &T,
     ) -> Result<Self::Ok, Self::Error> {
+        self.collect_decorators_for_type(name);
         let struct_id = self.emit_atom("newtype_struct", name);
         let inner_id = value.serialize(&mut *self)?;
         self.push_relation(
@@ -440,6 +466,7 @@ impl<'a> Serializer for &'a mut JsonDataSerializer {
         variant: &str,
         value: &T,
     ) -> Result<Self::Ok, Self::Error> {
+        self.collect_decorators_for_type(enum_name);
         let variant_id = self.emit_atom(enum_name, variant);
         let inner_id = value.serialize(&mut *self)?;
         self.push_relation(
@@ -476,6 +503,7 @@ impl<'a> Serializer for &'a mut JsonDataSerializer {
         name: &str,
         _len: usize,
     ) -> Result<Self::SerializeTupleStruct, Self::Error> {
+        self.collect_decorators_for_type(name);
         let struct_id = self.emit_atom("tuple_struct", name);
         Ok(TupleStructSerializer {
             serializer: self,
@@ -492,6 +520,7 @@ impl<'a> Serializer for &'a mut JsonDataSerializer {
         variant: &str,
         _len: usize,
     ) -> Result<Self::SerializeTupleVariant, Self::Error> {
+        self.collect_decorators_for_type(enum_name);
         let variant_id = self.emit_atom(enum_name, variant);
         Ok(TupleVariantSerializer {
             serializer: self,
@@ -538,6 +567,7 @@ impl<'a> Serializer for &'a mut JsonDataSerializer {
         variant: &str,
         _len: usize,
     ) -> Result<Self::SerializeStructVariant, Self::Error> {
+        self.collect_decorators_for_type(enum_name);
         let variant_id = self.emit_atom(enum_name, variant);
         Ok(StructVariantSerializer {
             serializer: self,

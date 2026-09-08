@@ -14,7 +14,7 @@ actual coordinates, as long as the constraint holds. Three things follow:
   other.
 - **They're per-type, not per-instance.** Decorate `RBNode` once; every
   `RBNode` in the value picks up the same rules, however deeply nested.
-- **They're collected transitively at compile time.** Decorating `Person`
+- **They're registered and collected transitively.** Decorating `Person`
   is enough for those rules to apply wherever `Person` appears inside a
   `Vec<T>`, `Option<T>`, `Box<T>`, or their nested combinations.
 
@@ -26,11 +26,11 @@ decorators do the rest. This is the full
 demo, built up stage by stage — each snippet is an attribute you add to
 the struct.
 
-**Stage 1 — bare derive.** Three derives, no decorators. The diagram is a
-correct but flat graph; you can't read it as a tree yet.
+**Stage 1 — no decorators.** `Debug + Serialize` is enough for a correct but
+flat structural graph; you can't read it as a tree yet.
 
 ```rust
-#[derive(Debug, Serialize, SpytialDecorators)]
+#[derive(Debug, Serialize)]
 struct RBNode {
     key: u32,
     color: Color,
@@ -39,10 +39,11 @@ struct RBNode {
 }
 ```
 
-**Stage 2 — show the key.** Each `RBNode` atom now carries its key as a
-label, so you can see what's where.
+**Stage 2 — show the key.** Add the derive and the first decorator. Each
+`RBNode` atom now carries its key as a label, so you can see what's where.
 
 ```rust
+#[derive(Debug, Serialize, SpytialDecorators)]
 #[attribute(field = "key")]
 ```
 

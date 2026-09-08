@@ -2,9 +2,11 @@
 //! interactive diagram of Rust values in the browser.
 //!
 //! The crate-level entry points are [`dbg!`] (a strict superset of
-//! [`std::dbg!`]) and [`diagram`] (no stderr, doesn't move). Both work on any
-//! type that derives [`std::fmt::Debug`], [`serde::Serialize`], and
-//! [`SpytialDecorators`].
+//! [`std::dbg!`]) and [`diagram`] (no stderr, doesn't move). [`diagram`] works
+//! with any [`serde::Serialize`] value; [`dbg!`] additionally requires
+//! [`std::fmt::Debug`] to preserve [`std::dbg!`]'s terminal output.
+//! [`SpytialDecorators`] is optional and enriches the automatic layout when
+//! derived.
 //!
 //! Start with the guide at <https://sidprasad.github.io/spytial-rust/> for the
 //! tutorial, decorator reference, and architecture notes. The README on
@@ -35,6 +37,15 @@ use std::time::SystemTime;
 
 static DIAGRAM_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Implementation details used by the derive macro.
+///
+/// This module is public only because procedural-macro output is compiled in
+/// downstream crates. Its contents are not part of Spytial's stable API.
+#[doc(hidden)]
+pub mod __private {
+    pub use inventory;
+}
+
 /// Pick the path where the rendered HTML diagram should be written.
 ///
 /// If `SPYTIAL_OUTPUT_PATH` is set, that path is used verbatim (used by the Docker
@@ -57,9 +68,14 @@ fn diagram_output_path() -> PathBuf {
 
 /// Render `value` as an interactive diagram and open it in the browser.
 ///
-/// Decorators are collected at compile time, so any nested type that derives
-/// [`SpytialDecorators`] contributes its own decorators with no manual
-/// registration.
+/// [`serde::Serialize`] is the only required trait. Types that derive
+/// [`SpytialDecorators`] are discovered automatically and enrich the default
+/// layout; undecorated standard-library, third-party, and user-defined values
+/// still receive a structural diagram.
+///
+/// ```no_run
+/// spytial::diagram(&vec![1, 2, 3]);
+/// ```
 ///
 /// # Example
 /// ```no_run
@@ -89,20 +105,10 @@ fn diagram_output_path() -> PathBuf {
 /// };
 /// diagram(&company);  // Shows decorators from both Company AND Person
 /// ```
-pub fn diagram<T: spytial_annotations::HasSpytialDecorators + Serialize>(value: &T) {
-    let spytial_spec = collect_spytial_spec_for_diagram(value);
-    diagram_impl(value, &spytial_spec);
-}
-
-/// Collect the YAML SpyTial spec for `value` from its compile-time decorators.
-///
-/// `T::decorators()` returns the decorators of `T` together with those of its
-/// nested types, so no runtime type registration is needed.
-fn collect_spytial_spec_for_diagram<T: spytial_annotations::HasSpytialDecorators + Serialize>(
-    _value: &T,
-) -> String {
-    let all_decorators = T::decorators();
-    spytial_annotations::to_yaml(&all_decorators).unwrap_or_default()
+pub fn diagram<T: Serialize>(value: &T) {
+    let (json_instance, decorators) = export::export_json_instance_and_decorators(value);
+    let spytial_spec = spytial_annotations::to_yaml(&decorators).unwrap_or_default();
+    diagram_instance_impl(&json_instance, &spytial_spec);
 }
 
 /// Like [`diagram`], but renders `value` against a caller-supplied SpyTial spec
@@ -126,8 +132,9 @@ pub fn diagram_with_spec<T: Serialize>(value: &T, spec: &str) {
 /// - `dbg!(a, b, …)` — returns a tuple `(a, b, …)`. Each argument is
 ///   diagrammed (opens one tab per argument).
 ///
-/// The expression's type must derive [`std::fmt::Debug`],
-/// [`serde::Serialize`], and [`SpytialDecorators`]. Both owned
+/// The expression's type must implement [`std::fmt::Debug`] and
+/// [`serde::Serialize`]. Deriving [`SpytialDecorators`] is optional; when
+/// present, its layout and styling rules are applied automatically. Both owned
 /// (`dbg!(x)`) and borrowed (`dbg!(&x)`) forms work.
 ///
 /// # Examples
@@ -153,6 +160,13 @@ pub fn diagram_with_spec<T: Serialize>(value: &T, spec: &str) {
 /// // Drop in for `std::dbg!`: prints Debug + opens a diagram,
 /// // returns `tree` through for further use.
 /// let tree = dbg!(tree);
+/// ```
+///
+/// No decorator derive is needed for a default structural diagram:
+///
+/// ```no_run
+/// let values = spytial::dbg!(vec![1, 2, 3]);
+/// assert_eq!(values, vec![1, 2, 3]);
 /// ```
 ///
 /// To suppress browser launch (CI, tests, headless runs), set
@@ -196,6 +210,10 @@ macro_rules! dbg {
 /// returns `x` regardless of whether the diagram step succeeded.
 fn diagram_impl<T: Serialize>(value: &T, spec: &str) {
     let json_instance = export_json_instance(value);
+    diagram_instance_impl(&json_instance, spec);
+}
+
+fn diagram_instance_impl(json_instance: &jsondata::JsonDataInstance, spec: &str) {
     let json_data = match serde_json::to_string_pretty(&json_instance) {
         Ok(json) => json,
         Err(err) => {

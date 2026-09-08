@@ -1,19 +1,65 @@
 use proc_macro::TokenStream;
 use quote::{quote, quote_spanned};
 use syn::{
-    parse_macro_input, spanned::Spanned, Attribute, Data, DeriveInput, Fields, GenericArgument,
-    PathArguments, Type,
+    parse_macro_input, punctuated::Punctuated, spanned::Spanned, Attribute, Data, DeriveInput,
+    Expr, Fields, GenericArgument, Lit, Meta, PathArguments, Token, Type,
 };
 
 mod spec_tables;
 use spec_tables::{DeprecationSpec, FieldRule};
+
+/// Return the name Serde passes to `Serializer::serialize_*` for this type.
+///
+/// Serde defaults to the Rust identifier and permits an explicit type-level
+/// `rename`, including a serialization-only rename. Reading that attribute in
+/// the derive keeps registry lookup aligned with the structured-data boundary
+/// without asking users to repeat a type name manually.
+fn serialized_type_name(attrs: &[Attribute], default: &str) -> syn::Result<String> {
+    let mut serialized_name = default.to_string();
+
+    for attr in attrs.iter().filter(|attr| attr.path().is_ident("serde")) {
+        let Meta::List(list) = &attr.meta else {
+            continue;
+        };
+        let metas = list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
+        for meta in metas {
+            match meta {
+                Meta::NameValue(name_value) if name_value.path.is_ident("rename") => {
+                    if let Expr::Lit(expr) = name_value.value {
+                        if let Lit::Str(name) = expr.lit {
+                            serialized_name = name.value();
+                        }
+                    }
+                }
+                Meta::List(rename) if rename.path.is_ident("rename") => {
+                    let directions =
+                        rename.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
+                    for direction in directions {
+                        if let Meta::NameValue(name_value) = direction {
+                            if name_value.path.is_ident("serialize") {
+                                if let Expr::Lit(expr) = name_value.value {
+                                    if let Lit::Str(name) = expr.lit {
+                                        serialized_name = name.value();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Ok(serialized_name)
+}
 
 /// Emit a decorator-probe call for each distinct user type reachable through
 /// this type's fields (looking through containers like `Vec`/`Option`/`Box`).
 fn collect_field_type_decorators(
     data: &Data,
     self_type_name: &str,
-) -> Vec<proc_macro2::TokenStream> {
+) -> Vec<(String, proc_macro2::TokenStream)> {
     let mut field_decorators = Vec::new();
     let mut seen_types = std::collections::HashSet::new();
 
@@ -50,7 +96,7 @@ fn collect_field_type_decorators(
 fn analyze_field_type(
     ty: &Type,
     seen_types: &mut std::collections::HashSet<String>,
-) -> Vec<proc_macro2::TokenStream> {
+) -> Vec<(String, proc_macro2::TokenStream)> {
     let Type::Path(type_path) = ty else {
         return Vec::new();
     };
@@ -76,7 +122,7 @@ fn analyze_field_type(
         // Everything else: safe to probe
         _ => {
             if seen_types.insert(name.clone()) {
-                vec![generate_probe_call(&name)]
+                vec![(name.clone(), generate_probe_call(&name))]
             } else {
                 Vec::new()
             }
@@ -172,6 +218,10 @@ pub fn derive_spytial_decorators(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
     let name = &input.ident;
+    let serialized_name = match serialized_type_name(&input.attrs, &name.to_string()) {
+        Ok(name) => name,
+        Err(err) => return err.to_compile_error().into(),
+    };
     let generics = &input.generics;
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
@@ -442,6 +492,8 @@ pub fn derive_spytial_decorators(input: TokenStream) -> TokenStream {
         }
     }
 
+    let own_decorator_calls = decorator_calls.clone();
+
     // Analyze field types and collect their decorators at compile time.
     // Only structs have fields to walk; enums and unions contribute nothing.
     let field_type_decorators = match &input.data {
@@ -449,12 +501,34 @@ pub fn derive_spytial_decorators(input: TokenStream) -> TokenStream {
         Data::Enum(_) | Data::Union(_) => Vec::new(),
     };
 
-    // Combine own decorators with field type decorators
-    decorator_calls.extend(field_type_decorators);
+    let nested_type_names: Vec<_> = field_type_decorators
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect();
+
+    // Combine own decorators with field type decorators.
+    decorator_calls.extend(field_type_decorators.into_iter().map(|(_, call)| call));
 
     // Generate the HasSpytialDecorators implementation
     let expanded = quote! {
         #(#deprecation_shims)*
+
+        const _: () = {
+            fn registered_decorators() -> spytial::spytial_annotations::SpytialDecorators {
+                spytial::spytial_annotations::SpytialDecoratorsBuilder::new()
+                    #(#own_decorator_calls)*
+                    .build()
+            }
+
+            spytial::__private::inventory::submit! {
+                spytial::spytial_annotations::DecoratorRegistration::new(
+                    stringify!(#name),
+                    #serialized_name,
+                    registered_decorators,
+                    &[#(#nested_type_names),*],
+                )
+            }
+        };
 
         impl #impl_generics spytial::spytial_annotations::HasSpytialDecorators for #name #ty_generics #where_clause {
             fn decorators() -> spytial::spytial_annotations::SpytialDecorators {
@@ -466,6 +540,10 @@ pub fn derive_spytial_decorators(input: TokenStream) -> TokenStream {
                         .build();
                     spytial::spytial_annotations::register_type_decorators(
                         stringify!(#name),
+                        decorators.clone()
+                    );
+                    spytial::spytial_annotations::register_type_decorators(
+                        #serialized_name,
                         decorators.clone()
                     );
                 });

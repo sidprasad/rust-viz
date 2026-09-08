@@ -12,8 +12,9 @@ Rust value in your browser instead of printing nested text:
 + spytial::dbg!(tree)
 ```
 
-Your terminal output is unchanged; a browser tab also opens with a diagram of
-the value. The layout is controlled by declarative decorators on your types.
+Your terminal output is unchanged; a browser tab also opens with a structural
+diagram of the value. Optional declarative decorators refine its layout and
+styling.
 
 ## Install
 
@@ -23,7 +24,16 @@ spytial = "0.1"
 serde = { version = "1", features = ["derive"] }
 ```
 
-Diagrammed types need `Debug`, `Serialize`, and `#[derive(SpytialDecorators)]`.
+`spytial::dbg!` accepts any `Debug + Serialize` value, including direct
+standard-library collections:
+
+```rust
+spytial::dbg!(&vec![1, 2, 3]);
+```
+
+`diagram(&value)` only needs `Serialize`. Add `#[derive(SpytialDecorators)]`
+when you want type-specific layout or styling; it is an enrichment, not a
+requirement.
 
 ## Docs
 
