@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-08
+
 - Changed: `spytial::dbg!` now accepts any `Debug + Serialize` value and
   `diagram()` accepts any `Serialize` value; `SpytialDecorators` is optional
   enrichment rather than a gate (#91). Derives submit a qualified Rust type
@@ -244,8 +246,6 @@ from spytial-core's own language manifest instead of transcribed by hand:
   the constraint/directive split is a wire-format detail Rust users never touch.
   A new test in `spec-codegen` checks every form's section against the manifest,
   because nothing in the authoring surface or the generated tables could.
-
-## [0.3.0] - TBD
 
 Speaks the spytial-core 4.0 directive contract:
 
