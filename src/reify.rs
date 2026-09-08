@@ -80,8 +80,7 @@ fn find_root(datum: &JsonDataInstance) -> Result<&str, ReifyError> {
     let mut targeted: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for rel in &datum.relations {
         for t in &rel.tuples {
-            // position 0 is the source; 1.. are targets (skip non-atom literals
-            // like the `idx` position string, which aren't real atom ids).
+            // Position 0 is the source; every later position names an atom.
             for tgt in t.atoms.iter().skip(1) {
                 if ids.contains(tgt.as_str()) {
                     targeted.insert(tgt.as_str());
@@ -185,7 +184,15 @@ impl<'a> Index<'a> {
         if let Some(tuples) = self.out.get(src).and_then(|m| m.get("idx")) {
             for t in tuples {
                 if let (Some(pos), Some(elem)) = (t.atoms.get(1), t.atoms.get(2)) {
-                    if let Ok(p) = pos.parse::<usize>() {
+                    // Current export output stores the position as an ordinary
+                    // value atom. Fall back to the raw tuple entry so data from
+                    // older spytial versions remains reifiable.
+                    let position_value = self
+                        .atoms
+                        .get(pos.as_str())
+                        .map(|atom| atom.label.as_str())
+                        .unwrap_or(pos.as_str());
+                    if let Ok(p) = position_value.parse::<usize>() {
                         items.push((p, elem.as_str()));
                     }
                 }
@@ -324,7 +331,7 @@ impl<'i, 'a, 'de> Deserializer<'de> for NodeDeserializer<'i, 'a> {
     fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, ReifyError> {
         let a = self.atom()?;
         match a.r#type.as_str() {
-            // `None` singleton.
+            // The `None` value atom.
             "None" => visitor.visit_none(),
             // `Some` wrapper — export inserts it only to keep an inner
             // `None`/`Some` distinct; descend through its `value` relation.
