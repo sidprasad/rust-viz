@@ -8,18 +8,19 @@
 
 use serde::Serialize;
 use spytial::export::try_export_json_instance;
-use spytial::{dbg, diagram, export_json_instance, SpytialDecorators};
+use spytial::{dbg, dbg_in, diagram, export_json_instance, SpytialDecorators, ViewerSession};
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread;
 use std::time::SystemTime;
 
 /// Suppress browser launch for every test in this file. `SPYTIAL_NO_OPEN`
-/// is read by the `diagram` implementation; setting it to "1" makes the
-/// macro and `diagram` write the temp HTML file but skip `open`/`xdg-open`.
+/// is read by both output paths; setting it to "1" makes `dbg!` write its
+/// persistent session file without starting the loopback server and makes
+/// `diagram` write its standalone file without calling `open`/`xdg-open`.
 ///
 /// The env var is process-global and we never unset it, so it's safe for
 /// parallel tests to all set the same value.
@@ -30,11 +31,11 @@ fn suppress_browser_open() {
 /// Cross-test coordination for any test that calls `dbg!`/`diagram`.
 ///
 /// `SPYTIAL_OUTPUT_PATH` is process-global, so when
-/// `diagram_writes_html_file` sets it, every other concurrent `dbg!`
-/// call in this binary would route its write to that same path and
-/// clobber the marker before it is read.  To avoid that, every test
-/// that triggers `diagram` (directly or via `dbg!`) acquires this
-/// mutex for the duration of its diagram-producing work.
+/// `diagram_writes_html_file` sets it, concurrent standalone output could
+/// clobber the marker. The default viewer also reads the variable once on its
+/// first capture, so it must not be initialized inside another test's override
+/// window. Every test that renders (directly or through a debug macro) acquires
+/// this mutex for the duration of its output-producing work.
 ///
 /// We use `unwrap_or_else(PoisonError::into_inner)` so one failed test
 /// does not cascade into spurious failures of the rest.
@@ -118,6 +119,54 @@ fn dbg_tuple_form_returns_tuple() {
     let (a, b) = dbg!(W(1), W(2));
     assert_eq!(a.0, 1);
     assert_eq!(b.0, 2);
+}
+
+#[test]
+fn named_session_records_multi_argument_captures_and_metadata() {
+    suppress_browser_open();
+
+    #[derive(Debug, Serialize, SpytialDecorators)]
+    struct W(i32);
+
+    let target = unique_output_path("named-session");
+    let _guard = diagram_lock();
+    env::set_var("SPYTIAL_OUTPUT_PATH", &target);
+
+    let session = ViewerSession::named("parser");
+    let (first, second) = dbg_in!(&session; W(10), W(20));
+    let read_result = fs::read_to_string(&target);
+    env::remove_var("SPYTIAL_OUTPUT_PATH");
+    drop(_guard);
+
+    assert_eq!((first.0, second.0), (10, 20));
+    let contents = read_result.unwrap_or_else(|error| {
+        panic!(
+            "named session should write {}; could not read: {error}",
+            target.display()
+        )
+    });
+    let first_position = contents.find("W(10)").expect("first expression metadata");
+    let second_position = contents.find("W(20)").expect("second expression metadata");
+    assert!(
+        first_position < second_position,
+        "captures should stay ordered"
+    );
+    assert!(
+        contents.contains("parser"),
+        "session name should be embedded"
+    );
+    let source_file_name = Path::new(file!())
+        .file_name()
+        .expect("source filename")
+        .to_string_lossy();
+    assert!(
+        contents.contains(source_file_name.as_ref()),
+        "source filename should be embedded"
+    );
+    assert!(contents.contains("timestamp_unix_ms"));
+    assert!(contents.contains("ThreadId("));
+
+    let _ = fs::remove_file(target);
 }
 
 // ──────────────────────────────────────────────
@@ -284,12 +333,10 @@ fn diagram_writes_html_file() {
 // ──────────────────────────────────────────────
 // 8. Concurrent dbg! calls do not panic
 //
-// 4 threads each call `dbg!(W(i))` 5 times.  None should panic.  The
-// new `diagram_output_path()` picks a unique path per call (pid + atomic
-// counter + nanos), so there is no shared-file collision to demonstrate
-// — but threads can still race on stderr buffering, env-var reads, and
-// the serializer's internals.  This test confirms those paths are
-// thread-safe.
+// 4 threads each call `dbg!(W(i))` 5 times. None should panic or lose its
+// returned value while the default session serializes their captures into one
+// ordered stream. The focused session unit test also inspects that stream for
+// contiguous sequence numbers and the expected capture count.
 //
 // The outer test fn holds `diagram_lock` so it doesn't race with
 // `diagram_writes_html_file` setting `SPYTIAL_OUTPUT_PATH`.  The

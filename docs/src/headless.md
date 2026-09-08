@@ -1,21 +1,22 @@
 # Running headless & in Docker
 
-Spytial's default — open a browser tab on every `dbg!(value)` or
-`diagram(&value)` call — is right for an interactive shell and wrong for
-CI, remote shells, containers, and test suites. Two environment variables
-cover the headless cases.
+Spytial's default is to open one persistent browser viewer for `dbg!` captures;
+standalone `diagram(&value)` calls still open their own files. Both behaviors
+are wrong for CI, remote shells, containers, and test suites. Two environment
+variables cover the headless cases.
 
 ## `SPYTIAL_NO_OPEN` — suppress the browser launch
 
 Set to `1`, `true`, or `yes` (case-insensitive) and spytial skips the
-platform browser-open command, writes the HTML to disk, and prints its
-path to stderr:
+platform browser-open command. For `dbg!`, it also skips the live loopback
+server while continuing to append captures to the session HTML on disk. The
+stable path is printed to stderr:
 
 ```sh
 SPYTIAL_NO_OPEN=1 cargo run --example rbt
 ```
 ```text
-spytial: diagram written to /tmp/spytial-12345-0-987654321.html
+spytial: capture appended to /tmp/spytial-session-12345-0-987654321.html
 ```
 
 `dbg!`'s pretty-printed output is unaffected, so `cargo test` capture
@@ -23,17 +24,32 @@ behaves exactly as it does for `std::dbg!`.
 
 ## `SPYTIAL_OUTPUT_PATH` — pin the output filename
 
-By default each diagram gets a unique temp path. To get a stable one — for
-serving with a static HTTP server, or round-tripping off a remote machine —
-set `SPYTIAL_OUTPUT_PATH`:
+The default `dbg!` session already uses one stable, unique temp path. To choose
+it — for serving with a static HTTP server, retaining it as an artifact, or
+round-tripping it off a remote machine — set `SPYTIAL_OUTPUT_PATH`:
 
 ```sh
 SPYTIAL_OUTPUT_PATH=/var/www/diagram.html cargo run
 ```
 
-The value is used verbatim. Each call overwrites it, the parent directory
-must already exist, and concurrent calls race — so pair it with
-`SPYTIAL_NO_OPEN=1` and render one diagram at a time.
+The value is read when the session starts and used verbatim. Each capture
+atomically replaces it with the complete ordered session, the parent directory
+must already exist, and concurrent calls are serialized. The file persists
+after process exit. Operating-system cleanup policies eventually remove the
+default temp file; Spytial does not delete it because it is the post-mortem
+viewer once the in-process server has stopped.
+
+`diagram()` retains its standalone behavior: with this variable set, each
+standalone call overwrites the path with one diagram rather than a session.
+
+## Persistent transport limits
+
+The `dbg!` viewer transport is a synchronous, single-user debugging aid. It is
+not configurable to listen beyond `127.0.0.1`, has no external-service or
+deployment mode, and stops with the captured program. This is separate from
+the repository's `viz_server` demo binary and deliberately does not turn that
+server into the async, authenticated deployment service discussed in issue
+#47.
 
 ## Docker
 

@@ -52,7 +52,8 @@ Two things happen:
 
 1. Your terminal prints `[src/main.rs:LINE:COL] tree = Node { … }` —
    exactly what `std::dbg!` would have printed.
-2. A browser tab opens with the rendered tree.
+2. A browser viewer opens with the rendered tree as capture 1. Later `dbg!`
+   calls append captures to the same viewer without opening more tabs.
 
 The three derives are the whole contract: `Debug` (already required by
 `std::dbg!`), plus `Serialize` and `SpytialDecorators`. The single
@@ -60,33 +61,61 @@ The three derives are the whole contract: `Debug` (already required by
 its label; without it the nodes would be anonymous. The next page,
 [Decorators](./decorators.md), covers the rest.
 
-## The two entry points
+## The entry points
 
 | Call | Behavior |
 |------|----------|
-| `dbg!(x)` | Prints `[file:line:col] x = {:#?}` to stderr, opens a diagram, returns `x` through. `dbg!(&x)` borrows; `dbg!(a, b)` returns `(a, b)` and opens one tab per argument. |
-| `diagram(&x)` | No stderr, no source location, doesn't move `x`. Use it in library code or anywhere you don't want debug noise. |
+| `dbg!(x)` | Prints `[file:line:col] x = {:#?}` to stderr, appends an ordered capture to the process viewer, and returns `x` through. `dbg!(&x)` borrows; `dbg!(a, b)` returns `(a, b)` and appends two captures. |
+| `dbg_in!(&session; x)` | The same behavior, routed to an explicit `ViewerSession`. |
+| `diagram(&x)` | Writes and opens a standalone diagram, with no stderr or source expression, and doesn't move `x`. |
 
 Decorators on a type apply automatically wherever a value of that type
 appears inside another decorated type — the derive walks `Vec<T>`,
 `Option<T>`, `Box<T>`, and their nested combinations at compile time. You
 never register nested types anywhere.
 
-## Where the file lives
+## The viewer session
 
-By default spytial writes each diagram to a unique file in your OS temp
-directory, named like `spytial-{pid}-{counter}-{nanos}.html`, so
-concurrent `dbg!` calls don't trample each other.
+The first `dbg!` call creates one default session for the process. Each capture
+gets a monotonic sequence number while holding the session lock, so calls from
+multiple threads cannot be lost or corrupt the stream. The viewer initially
+selects the latest capture; selecting an older capture stops following the
+tail until you select the newest one again.
+
+Spytial writes the whole session after every capture to one self-contained HTML
+file in your OS temp directory, named like
+`spytial-session-{pid}-{counter}-{nanos}.html`. The live browser polls a tiny
+in-process HTTP server on `127.0.0.1` using an OS-selected, collision-free port.
+The server and live updates end when the process exits, but the HTML snapshot
+remains usable afterward and contains the bundled rendering assets.
+The transport is intentionally synchronous and single-user; it cannot be
+configured to bind beyond loopback and is not a deployment server.
+If the loopback server cannot start, Spytial still opens the durable snapshot
+once and continues refreshing that file as later captures arrive; reload the
+page to see those later captures.
 
 To pin the output to a known path — for serving it from a static file
 server, or copying it off a remote machine — set `SPYTIAL_OUTPUT_PATH`:
 
 ```sh
-SPYTIAL_OUTPUT_PATH=/tmp/my-diagram.html cargo run
+SPYTIAL_OUTPUT_PATH=/tmp/my-session.html cargo run
 ```
 
-The path is taken verbatim and overwritten on each call, so this is a
-one-diagram-at-a-time setup.
+The path is read when the session is created, taken verbatim, and atomically
+refreshed with the complete capture list. Its parent directory must already
+exist. If you create multiple explicit sessions while setting one output path,
+they will intentionally target the same file, so give only one of them that
+configuration.
+
+To separate capture streams inside one process, create a named session and use
+`dbg_in!`:
+
+```rust
+use spytial::{dbg_in, ViewerSession};
+
+let parser = ViewerSession::named("parser");
+let state = dbg_in!(&parser; state);
+```
 
 ## Skipping the browser launch
 
@@ -98,6 +127,7 @@ SPYTIAL_NO_OPEN=1 cargo run
 ```
 
 stderr is unaffected, so `cargo test` capture behaves exactly as it does
-for `std::dbg!`. With the launch suppressed, spytial prints the path of
-the rendered HTML so you can open it manually. See
+for `std::dbg!`. No viewer server is started. Spytial still appends every
+capture to the session HTML and prints that stable path so you can open it
+manually after or during the run. See
 [Running headless & in Docker](./headless.md) for the full setup.
