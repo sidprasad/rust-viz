@@ -1,11 +1,32 @@
 # Library API
 
 The `dbg!` macro and `diagram()` are tuned for interactive use: `dbg!`
-pretty-prints the value to stderr, both open a browser, and both swallow
-errors with a one-line `eprintln!`. When spytial is buried inside
-something else — a CLI
+pretty-prints the value to stderr and appends it to the process viewer,
+`diagram()` opens a standalone page, and both swallow errors with a one-line
+`eprintln!`. When spytial is buried inside something else — a CLI
 subcommand, a test harness, a service that renders diagrams for clients —
 you'll want the lower-level entry points instead.
+
+## `ViewerSession` and `dbg_in!` — separate capture streams
+
+```rust
+use spytial::{dbg_in, ViewerSession};
+
+let parser = ViewerSession::named("parser");
+let (before, after) = dbg_in!(&parser; before, after);
+eprintln!("session snapshot: {}", parser.output_path().display());
+```
+
+`dbg!` uses one lazily-created process session. `ViewerSession::new()` and
+`ViewerSession::named()` create independent sessions; `dbg_in!` provides the
+same evaluation, stderr, ownership, and return-value behavior while routing
+captures to one of them. `ViewerSession::diagram()` adds a capture without the
+`Debug` print and labels its expression `diagram`.
+
+Each session starts its browser and loopback transport at most once, on the
+first non-headless capture. Cloning `ViewerSession` shares the capture stream,
+which makes it safe to pass to worker threads. `id()`, `name()`, and
+`output_path()` expose the session metadata without exposing the transport.
 
 ## `diagram(&value)` — render and open
 
@@ -76,6 +97,8 @@ serialization succeeded.
 | Use case | Entry point |
 |----------|-------------|
 | Ad-hoc debugging with stderr trail | `spytial::dbg!` |
+| Named or separate debug capture stream | `dbg_in!(&session; value)` |
+| Capture into an explicit session without stderr | `ViewerSession::diagram(&value)` |
 | One-call render with auto layout | `diagram(&value)` |
 | Render with a custom YAML spec | `diagram_with_spec(&value, spec)` |
 | Capture relational JSON only | `export_json_instance(&value)` |

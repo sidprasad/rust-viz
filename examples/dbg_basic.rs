@@ -38,7 +38,7 @@ fn main() {
         })),
     };
 
-    // Drop in for `std::dbg!`: opens a browser tab with the diagram,
-    // returns the value through for further use.
+    // Drop in for `std::dbg!`: appends a diagram to the process viewer
+    // and returns the value through for further use.
     let _tree = dbg!(tree);
 }

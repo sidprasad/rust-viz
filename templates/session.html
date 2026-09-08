@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spytial capture session</title>
+    <style>/*__SPYTIAL_CORE_CSS__*/</style>
+    <style>/*__REACT_COMPONENTS_CSS__*/</style>
+    <script>/*__SPYTIAL_CORE_JS__*/</script>
+    <script>/*__REACT_COMPONENTS_JS__*/</script>
+    <style>
+        :root {
+            color-scheme: light;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            color: #1f2328;
+            background: #f6f8fa;
+        }
+
+        * { box-sizing: border-box; }
+        body { margin: 0; min-height: 100vh; }
+
+        .shell {
+            display: grid;
+            grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+            height: 100vh;
+        }
+
+        .sidebar {
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+            border-right: 1px solid #d0d7de;
+            background: #fff;
+        }
+
+        .session-header { padding: 16px; border-bottom: 1px solid #d8dee4; }
+        .session-header h1 { margin: 0 0 5px; font-size: 18px; }
+        .session-id { color: #656d76; font: 11px ui-monospace, monospace; overflow-wrap: anywhere; }
+
+        #capture-list { margin: 0; padding: 8px; list-style: none; overflow: auto; }
+        #capture-list button {
+            width: 100%;
+            margin: 0 0 6px;
+            padding: 10px;
+            border: 1px solid transparent;
+            border-radius: 6px;
+            text-align: left;
+            color: inherit;
+            background: transparent;
+            cursor: pointer;
+        }
+        #capture-list button:hover { background: #f6f8fa; }
+        #capture-list button.selected { background: #ddf4ff; border-color: #54aeff; }
+        .capture-title { display: flex; gap: 8px; align-items: baseline; }
+        .sequence { flex: none; color: #0969da; font-weight: 700; }
+        .expression { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 13px ui-monospace, monospace; }
+        .capture-location { margin-top: 5px; color: #656d76; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+        .main { min-width: 0; display: flex; flex-direction: column; }
+        .capture-header {
+            min-height: 72px;
+            padding: 13px 18px;
+            border-bottom: 1px solid #d0d7de;
+            background: #fff;
+        }
+        #selected-expression { margin: 0 0 7px; font: 600 15px ui-monospace, monospace; overflow-wrap: anywhere; }
+        #selected-metadata { color: #656d76; font-size: 12px; }
+        #graph-wrapper { position: relative; flex: 1; min-height: 400px; background: #fff; }
+        #graph-container { width: 100%; height: 100%; min-height: 400px; display: block; }
+        #error-message { position: absolute; z-index: 10; left: 16px; right: 16px; top: 16px; }
+        .error { color: #cf222e; padding: 10px; border: 1px solid #ff8182; border-radius: 6px; background: #ffebe9; }
+        .reset-btn { margin-left: 8px; padding: 6px 9px; border: 0; border-radius: 4px; background: #0969da; color: white; cursor: pointer; }
+
+        @media (max-width: 720px) {
+            .shell { grid-template-columns: 1fr; grid-template-rows: minmax(150px, 34vh) minmax(0, 1fr); }
+            .sidebar { border-right: 0; border-bottom: 1px solid #d0d7de; }
+        }
+    </style>
+</head>
+<body>
+    <div class="shell">
+        <aside class="sidebar">
+            <header class="session-header">
+                <h1 id="session-name">Spytial session</h1>
+                <div id="session-id" class="session-id"></div>
+            </header>
+            <ol id="capture-list" aria-label="Captures in execution order"></ol>
+        </aside>
+        <main class="main">
+            <header class="capture-header">
+                <div id="selected-expression">Waiting for a capture…</div>
+                <div id="selected-metadata"></div>
+            </header>
+            <div id="graph-wrapper">
+                <div id="error-message"></div>
+                <div id="error-core"></div>
+                <webcola-cnd-graph
+                    id="graph-container"
+                    width="800"
+                    height="600"
+                    layoutFormat="default"
+                    aria-label="Interactive graph visualization">
+                </webcola-cnd-graph>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        const initialCaptures = JSON.parse({{ captures_json_literal }});
+        const captureEndpoint = {{ capture_endpoint_literal }};
+        let captures = initialCaptures;
+        let selectedSequence = null;
+        let followingLatest = true;
+        let graphElement = null;
+        let instanceLayout = null;
+        let resetButtonAdded = false;
+
+        function coreApi() {
+            return window.CndCore || window.CnDCore || window.spytialcore;
+        }
+
+        function sourceLabel(capture) {
+            const source = capture.source;
+            return `${source.file}:${source.line}:${source.column}`;
+        }
+
+        function threadLabel(capture) {
+            const thread = capture.thread || {};
+            return thread.name ? `${thread.name} (${thread.id})` : (thread.id || "unknown thread");
+        }
+
+        function displaySession() {
+            const capture = captures[0];
+            if (!capture) return;
+            document.getElementById("session-name").textContent = capture.session_name || "Spytial session";
+            document.getElementById("session-id").textContent = capture.session_id;
+        }
+
+        function renderCaptureList() {
+            captures.sort((left, right) => left.sequence - right.sequence);
+            const list = document.getElementById("capture-list");
+            list.replaceChildren();
+
+            for (const capture of captures) {
+                const item = document.createElement("li");
+                const button = document.createElement("button");
+                button.type = "button";
+                button.classList.toggle("selected", capture.sequence === selectedSequence);
+                button.title = `${capture.expression} — ${sourceLabel(capture)}`;
+
+                const title = document.createElement("div");
+                title.className = "capture-title";
+                const sequence = document.createElement("span");
+                sequence.className = "sequence";
+                sequence.textContent = `#${capture.sequence}`;
+                const expression = document.createElement("span");
+                expression.className = "expression";
+                expression.textContent = capture.expression;
+                title.append(sequence, expression);
+
+                const location = document.createElement("div");
+                location.className = "capture-location";
+                location.textContent = sourceLabel(capture);
+                button.append(title, location);
+                button.addEventListener("click", () => {
+                    followingLatest = capture.sequence === captures[captures.length - 1].sequence;
+                    selectCapture(capture.sequence);
+                });
+                item.append(button);
+                list.append(item);
+            }
+        }
+
+        async function selectCapture(sequence) {
+            const capture = captures.find(item => item.sequence === sequence);
+            if (!capture) return;
+            selectedSequence = sequence;
+            renderCaptureList();
+
+            document.getElementById("selected-expression").textContent = `#${capture.sequence}  ${capture.expression}`;
+            const timestamp = new Date(Number(capture.timestamp_unix_ms)).toLocaleString();
+            document.getElementById("selected-metadata").textContent = `${sourceLabel(capture)} · ${threadLabel(capture)} · ${timestamp}`;
+            await renderGraph(capture);
+        }
+
+        async function renderGraph(capture) {
+            const api = coreApi();
+            graphElement = document.getElementById("graph-container");
+            document.getElementById("error-message").replaceChildren();
+            graphElement.removeAttribute("unsat");
+
+            if (!api || typeof api.JSONDataInstance !== "function") {
+                showError("Spytial core failed to load from the bundled assets.");
+                return;
+            }
+
+            try {
+                const dataInstance = new api.JSONDataInstance(capture.datum);
+                const evaluator = new api.SGraphQueryEvaluator();
+                evaluator.initialize({ sourceData: dataInstance });
+                const layoutSpec = api.parseLayoutSpec(capture.spytial_spec);
+                const layout = new api.LayoutInstance(layoutSpec, evaluator, 0, true);
+                const result = layout.generateLayout(dataInstance, {});
+
+                if (result.error) {
+                    graphElement.setAttribute("unsat", "");
+                    showError(result.error.message || "Layout generation failed");
+                    return;
+                }
+
+                instanceLayout = result.layout;
+                await graphElement.renderLayout(instanceLayout);
+                addResetButton();
+            } catch (error) {
+                showError(`Layout generation failed: ${error.message}`);
+            }
+        }
+
+        function addResetButton() {
+            if (resetButtonAdded || !graphElement || !graphElement.addToolbarControl) return;
+            const button = document.createElement("button");
+            button.className = "reset-btn";
+            button.textContent = "↻ Reset";
+            button.title = "Reset layout";
+            button.addEventListener("click", async () => {
+                if (instanceLayout) await graphElement.renderLayout(instanceLayout);
+            });
+            graphElement.addToolbarControl(button);
+            resetButtonAdded = true;
+        }
+
+        function showError(message) {
+            const error = document.createElement("div");
+            error.className = "error";
+            error.textContent = message;
+            document.getElementById("error-message").replaceChildren(error);
+        }
+
+        async function pollCaptures() {
+            if (!captureEndpoint) return;
+            try {
+                const response = await fetch(captureEndpoint, { cache: "no-store" });
+                if (!response.ok) return;
+                const next = await response.json();
+                if (!Array.isArray(next) || next.length === captures.length) return;
+                captures = next;
+                displaySession();
+                const latest = captures[captures.length - 1];
+                if (followingLatest || selectedSequence === null) {
+                    await selectCapture(latest.sequence);
+                } else {
+                    renderCaptureList();
+                }
+            } catch (_) {
+                // The program and its loopback server may have exited. The
+                // captures already loaded in this page remain usable.
+            }
+        }
+
+        window.addEventListener("load", async () => {
+            if (window.mountErrorMessageModal) window.mountErrorMessageModal("error-core");
+            displaySession();
+            if (captures.length) await selectCapture(captures[captures.length - 1].sequence);
+            if (captureEndpoint) window.setInterval(pollCaptures, 500);
+        });
+    </script>
+</body>
+</html>
