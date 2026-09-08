@@ -108,12 +108,15 @@
     <script>
         const initialCaptures = JSON.parse({{ captures_json_literal }});
         const captureEndpoint = {{ capture_endpoint_literal }};
+        const expectedSessionId = initialCaptures[0]?.session_id ?? null;
         let captures = initialCaptures;
         let selectedSequence = null;
         let followingLatest = true;
         let graphElement = null;
         let instanceLayout = null;
         let resetButtonAdded = false;
+        let pendingCapture = null;
+        let renderInProgress = false;
 
         function coreApi() {
             return window.CndCore || window.CnDCore || window.spytialcore;
@@ -180,7 +183,26 @@
             document.getElementById("selected-expression").textContent = `#${capture.sequence}  ${capture.expression}`;
             const timestamp = new Date(Number(capture.timestamp_unix_ms)).toLocaleString();
             document.getElementById("selected-metadata").textContent = `${sourceLabel(capture)} · ${threadLabel(capture)} · ${timestamp}`;
-            await renderGraph(capture);
+            await queueGraphRender(capture);
+        }
+
+        async function queueGraphRender(capture) {
+            pendingCapture = capture;
+            if (renderInProgress) return;
+
+            renderInProgress = true;
+            try {
+                // Only one renderLayout call may be in flight. If selections
+                // arrive during a render, skip intermediate work and render
+                // the most recently requested capture next.
+                while (pendingCapture) {
+                    const nextCapture = pendingCapture;
+                    pendingCapture = null;
+                    await renderGraph(nextCapture);
+                }
+            } finally {
+                renderInProgress = false;
+            }
         }
 
         async function renderGraph(capture) {
@@ -208,8 +230,9 @@
                     return;
                 }
 
-                instanceLayout = result.layout;
-                await graphElement.renderLayout(instanceLayout);
+                const nextLayout = result.layout;
+                await graphElement.renderLayout(nextLayout);
+                instanceLayout = nextLayout;
                 addResetButton();
             } catch (error) {
                 showError(`Layout generation failed: ${error.message}`);
@@ -242,7 +265,9 @@
                 const response = await fetch(captureEndpoint, { cache: "no-store" });
                 if (!response.ok) return;
                 const next = await response.json();
-                if (!Array.isArray(next) || next.length === captures.length) return;
+                if (!Array.isArray(next) || next.length === 0) return;
+                if (!expectedSessionId || next.some(capture => capture.session_id !== expectedSessionId)) return;
+                if (next.length === captures.length) return;
                 captures = next;
                 displaySession();
                 const latest = captures[captures.length - 1];

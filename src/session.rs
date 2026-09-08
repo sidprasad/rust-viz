@@ -9,7 +9,17 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{self, Command};
+use std::process;
+#[cfg(any(
+    target_os = "macos",
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, SystemTime};
@@ -58,7 +68,7 @@ struct SessionInner {
 enum ViewerState {
     NotStarted,
     Started,
-    Failed,
+    SnapshotOnly,
 }
 
 impl Default for ViewerSession {
@@ -212,25 +222,30 @@ impl ViewerSession {
 
     fn ensure_viewer_started(&self) {
         let captures = Arc::clone(&self.inner.captures);
+        let session_id = self.inner.id.clone();
         self.ensure_viewer_started_with(
-            move || start_server(captures),
+            move || start_server(captures, session_id),
             |url| {
-                let snapshot_result = {
-                    let captures = lock_or_recover(&self.inner.captures);
-                    let endpoint = self.inner.capture_endpoint.get().map(String::as_str);
-                    let html = render_session_html(&captures, endpoint);
-                    write_snapshot(&self.inner.output_path, html.as_bytes())
-                };
-                if let Err(error) = &snapshot_result {
-                    eprintln!(
-                        "spytial: could not add live updates to {}: {error}",
-                        self.inner.output_path.display()
-                    );
-                }
-                let target = if snapshot_result.is_ok() {
-                    self.inner.output_path.to_string_lossy()
+                let target = if let Some(url) = url {
+                    let snapshot_result = {
+                        let captures = lock_or_recover(&self.inner.captures);
+                        let endpoint = self.inner.capture_endpoint.get().map(String::as_str);
+                        let html = render_session_html(&captures, endpoint);
+                        write_snapshot(&self.inner.output_path, html.as_bytes())
+                    };
+                    if let Err(error) = &snapshot_result {
+                        eprintln!(
+                            "spytial: could not add live updates to {}: {error}",
+                            self.inner.output_path.display()
+                        );
+                    }
+                    if snapshot_result.is_ok() {
+                        self.inner.output_path.to_string_lossy().into_owned()
+                    } else {
+                        url.to_string()
+                    }
                 } else {
-                    url.into()
+                    self.inner.output_path.to_string_lossy().into_owned()
                 };
                 open_browser(&target)
             },
@@ -240,7 +255,7 @@ impl ViewerSession {
     fn ensure_viewer_started_with<S, O>(&self, start_server: S, open_browser: O)
     where
         S: FnOnce() -> io::Result<String>,
-        O: FnOnce(&str) -> io::Result<()>,
+        O: FnOnce(Option<&str>) -> io::Result<()>,
     {
         let mut state = lock_or_recover(&self.inner.viewer);
         if *state != ViewerState::NotStarted {
@@ -250,20 +265,29 @@ impl ViewerSession {
         let url = match start_server() {
             Ok(url) => url,
             Err(error) => {
-                *state = ViewerState::Failed;
+                *state = ViewerState::SnapshotOnly;
                 eprintln!(
-                    "spytial: could not start the local viewer server: {error}. Open {} manually",
+                    "spytial: could not start the local viewer server: {error}. Falling back to {}",
                     self.inner.output_path.display()
                 );
+                if let Err(open_error) = open_browser(None) {
+                    eprintln!(
+                        "spytial: failed to open the static viewer ({open_error}). Open {} manually",
+                        self.inner.output_path.display()
+                    );
+                }
                 return;
             }
         };
 
         // Starting succeeded, so do not retry (and create tab spam) even when
         // the platform browser command itself fails.
-        let _ = self.inner.capture_endpoint.set(format!("{url}captures"));
+        let _ = self
+            .inner
+            .capture_endpoint
+            .set(format!("{url}sessions/{}/captures", self.inner.id));
         *state = ViewerState::Started;
-        if let Err(error) = open_browser(&url) {
+        if let Err(error) = open_browser(Some(&url)) {
             eprintln!(
                 "spytial: failed to open browser ({error}). Open {url} or {} manually",
                 self.inner.output_path.display()
@@ -353,15 +377,16 @@ fn write_snapshot(path: &Path, contents: &[u8]) -> io::Result<()> {
     }
 }
 
-fn start_server(captures: Arc<Mutex<Vec<Value>>>) -> io::Result<String> {
+fn start_server(captures: Arc<Mutex<Vec<Value>>>, session_id: String) -> io::Result<String> {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let address = listener.local_addr()?;
+    let capture_path = format!("/sessions/{session_id}/captures");
     std::thread::Builder::new()
         .name("spytial-viewer".to_string())
         .spawn(move || {
             for stream in listener.incoming() {
                 match stream {
-                    Ok(mut stream) => handle_connection(&mut stream, &captures),
+                    Ok(mut stream) => handle_connection(&mut stream, &captures, &capture_path),
                     Err(error) => {
                         eprintln!("spytial: local viewer connection failed: {error}");
                     }
@@ -371,7 +396,7 @@ fn start_server(captures: Arc<Mutex<Vec<Value>>>) -> io::Result<String> {
     Ok(format!("http://{address}/"))
 }
 
-fn handle_connection(stream: &mut TcpStream, captures: &Mutex<Vec<Value>>) {
+fn handle_connection(stream: &mut TcpStream, captures: &Mutex<Vec<Value>>, capture_path: &str) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     let mut buffer = [0_u8; 8192];
     let bytes_read = match stream.read(&mut buffer) {
@@ -406,7 +431,7 @@ fn handle_connection(stream: &mut TcpStream, captures: &Mutex<Vec<Value>>) {
     match path {
         "/" | "/index.html" => {
             let snapshot = lock_or_recover(captures);
-            let html = render_session_html(&snapshot, Some("/captures"));
+            let html = render_session_html(&snapshot, Some(capture_path));
             write_response(
                 stream,
                 "200 OK",
@@ -414,7 +439,7 @@ fn handle_connection(stream: &mut TcpStream, captures: &Mutex<Vec<Value>>) {
                 html.as_bytes(),
             );
         }
-        "/captures" => {
+        path if path == capture_path => {
             let snapshot = lock_or_recover(captures);
             let body = serde_json::to_vec(&*snapshot).unwrap_or_else(|_| b"[]".to_vec());
             write_response(stream, "200 OK", "application/json; charset=utf-8", &body);
@@ -440,15 +465,17 @@ fn write_response(stream: &mut TcpStream, status: &str, content_type: &str, body
     }
 }
 
-fn open_browser(target: &str) -> io::Result<()> {
+fn open_browser(_target: &str) -> io::Result<()> {
     #[cfg(target_os = "macos")]
-    let mut command = Command::new("open");
+    {
+        Command::new("open").arg(_target).spawn().map(|_| ())
+    }
     #[cfg(target_os = "windows")]
-    let mut command = {
+    {
         let mut command = Command::new("cmd");
         command.args(["/C", "start", ""]);
-        command
-    };
+        command.arg(_target).spawn().map(|_| ())
+    }
     #[cfg(any(
         target_os = "linux",
         target_os = "freebsd",
@@ -456,7 +483,9 @@ fn open_browser(target: &str) -> io::Result<()> {
         target_os = "netbsd",
         target_os = "dragonfly"
     ))]
-    let mut command = Command::new("xdg-open");
+    {
+        Command::new("xdg-open").arg(_target).spawn().map(|_| ())
+    }
     #[cfg(not(any(
         target_os = "macos",
         target_os = "windows",
@@ -466,12 +495,12 @@ fn open_browser(target: &str) -> io::Result<()> {
         target_os = "netbsd",
         target_os = "dragonfly"
     )))]
-    return Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "no known browser-open command for this platform",
-    ));
-
-    command.arg(target).spawn().map(|_| ())
+    {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "no known browser-open command for this platform",
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -610,7 +639,8 @@ mod tests {
                 starts.fetch_add(1, Ordering::SeqCst);
                 Ok("http://127.0.0.1:1234/".to_string())
             },
-            |_| {
+            |url| {
+                assert_eq!(url, Some("http://127.0.0.1:1234/"));
                 opens.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             },
@@ -638,12 +668,16 @@ mod tests {
 
         assert_eq!(starts.load(Ordering::SeqCst), 1);
         assert_eq!(opens.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            session.inner.capture_endpoint.get().map(String::as_str),
+            Some("http://127.0.0.1:1234/sessions/test-session/captures")
+        );
     }
 
     #[test]
     fn live_transport_uses_loopback_and_serves_captures() {
         let captures = Arc::new(Mutex::new(vec![test_capture("served")]));
-        let url = match start_server(captures) {
+        let url = match start_server(captures, "test-session".to_string()) {
             Ok(url) => url,
             Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
                 eprintln!("skipping loopback transport test: {error}");
@@ -656,7 +690,7 @@ mod tests {
         let address = url.strip_prefix("http://").unwrap().trim_end_matches('/');
         let mut stream = TcpStream::connect(address).unwrap();
         stream
-            .write_all(b"GET /captures HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .write_all(b"GET /sessions/test-session/captures HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
             .unwrap();
         let mut response = String::new();
         stream.read_to_string(&mut response).unwrap();
@@ -664,6 +698,14 @@ mod tests {
         assert!(response.starts_with("HTTP/1.1 200 OK"));
         assert!(response.contains("Access-Control-Allow-Origin: null"));
         assert!(response.contains("served"));
+
+        let mut wrong_session = TcpStream::connect(address).unwrap();
+        wrong_session
+            .write_all(b"GET /sessions/other-session/captures HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let mut wrong_response = String::new();
+        wrong_session.read_to_string(&mut wrong_response).unwrap();
+        assert!(wrong_response.starts_with("HTTP/1.1 404 Not Found"));
     }
 
     #[test]
@@ -682,16 +724,20 @@ mod tests {
                         "injected bind failure",
                     ))
                 },
-                |_| {
+                |url| {
+                    assert!(url.is_none());
                     opens.fetch_add(1, Ordering::SeqCst);
                     Ok(())
                 },
             );
         }
 
-        assert_eq!(*lock_or_recover(&session.inner.viewer), ViewerState::Failed);
+        assert_eq!(
+            *lock_or_recover(&session.inner.viewer),
+            ViewerState::SnapshotOnly
+        );
         assert_eq!(starts.load(Ordering::SeqCst), 1);
-        assert_eq!(opens.load(Ordering::SeqCst), 0);
+        assert_eq!(opens.load(Ordering::SeqCst), 1);
     }
 
     #[test]

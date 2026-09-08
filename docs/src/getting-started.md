@@ -90,6 +90,9 @@ The server and live updates end when the process exits, but the HTML snapshot
 remains usable afterward and contains the bundled rendering assets.
 The transport is intentionally synchronous and single-user; it cannot be
 configured to bind beyond loopback and is not a deployment server.
+If the loopback server cannot start, Spytial still opens the durable snapshot
+once and continues refreshing that file as later captures arrive; reload the
+page to see those later captures.
 
 To pin the output to a known path — for serving it from a static file
 server, or copying it off a remote machine — set `SPYTIAL_OUTPUT_PATH`:
