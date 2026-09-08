@@ -8,6 +8,7 @@
 
 use serde::Serialize;
 use spytial::export::try_export_json_instance;
+use spytial::jsondata::JsonDataInstance;
 use spytial::{dbg, diagram, export_json_instance, SpytialDecorators};
 use std::collections::HashMap;
 use std::env;
@@ -84,6 +85,19 @@ fn unique_output_path(tag: &str) -> PathBuf {
     env::temp_dir().join(format!("spytial-e2e-{tag}-{pid}-{counter}-{nanos}.html"))
 }
 
+/// Parse the exact datum embedded in the self-contained HTML that the public
+/// diagram path writes. This checks the hand-off to the browser, not merely a
+/// separate call to `export_json_instance`.
+fn embedded_datum(contents: &str) -> JsonDataInstance {
+    let (_, after_marker) = contents
+        .split_once("const jsonData = `")
+        .expect("rendered HTML should declare its JSON datum");
+    let (json, _) = after_marker
+        .split_once("`;")
+        .expect("rendered HTML should terminate its JSON datum");
+    serde_json::from_str(json).expect("embedded diagram datum should be valid JSON")
+}
+
 // ──────────────────────────────────────────────
 // 1. dbg!(x) returns the value (move form)
 // ──────────────────────────────────────────────
@@ -104,15 +118,55 @@ fn dbg_returns_value() {
 fn dbg_accepts_direct_vec_and_hash_map_values() {
     suppress_browser_open();
 
+    let target = unique_output_path("collections-datum");
     let _guard = diagram_lock();
+    env::set_var("SPYTIAL_OUTPUT_PATH", &target);
+
     let values = vec![1, 2, 3];
     let returned_values = dbg!(&values);
     assert_eq!(returned_values, &vec![1, 2, 3]);
+    let sequence = embedded_datum(
+        &fs::read_to_string(&target).expect("dbg! should write the Vec diagram HTML"),
+    );
+    assert_eq!(sequence.atoms[0].r#type, "sequence");
+    assert!(sequence
+        .atoms
+        .iter()
+        .any(|atom| atom.r#type == "i32" && atom.label == "3"));
+    assert_eq!(
+        sequence
+            .relations
+            .iter()
+            .find(|relation| relation.name == "idx")
+            .expect("Vec datum should contain an idx relation")
+            .tuples
+            .len(),
+        3
+    );
 
     let users = HashMap::from([("Ada", 1), ("Grace", 2)]);
     let returned_users = dbg!(&users);
     assert_eq!(returned_users.get("Ada"), Some(&1));
     assert_eq!(returned_users.get("Grace"), Some(&2));
+    let map = embedded_datum(
+        &fs::read_to_string(&target).expect("dbg! should write the HashMap diagram HTML"),
+    );
+    assert_eq!(map.atoms[0].r#type, "map");
+    assert!(map.atoms.iter().any(|atom| atom.label == "Ada"));
+    assert!(map.atoms.iter().any(|atom| atom.label == "Grace"));
+    assert_eq!(
+        map.relations
+            .iter()
+            .find(|relation| relation.name == "map_entry")
+            .expect("HashMap datum should contain a map_entry relation")
+            .tuples
+            .len(),
+        2
+    );
+
+    env::remove_var("SPYTIAL_OUTPUT_PATH");
+    drop(_guard);
+    let _ = fs::remove_file(&target);
 }
 
 #[test]
@@ -134,8 +188,16 @@ fn undecorated_user_type_works_with_dbg_and_diagram() {
     drop(_guard);
 
     let contents = read_result.expect("diagram() should render an undecorated Serialize value");
-    assert!(contents.contains("UndecoratedUser"));
-    assert!(contents.contains("Ada"));
+    let datum = embedded_datum(&contents);
+    assert_eq!(datum.atoms[0].r#type, "UndecoratedUser");
+    assert!(datum
+        .atoms
+        .iter()
+        .any(|atom| atom.r#type == "string" && atom.label == "Ada"));
+    assert!(datum
+        .relations
+        .iter()
+        .any(|relation| relation.name == "name" && relation.tuples.len() == 1));
     let _ = fs::remove_file(&target);
 }
 

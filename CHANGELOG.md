@@ -16,7 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default structural layout. Serde-renamed types are registered under both
   their Rust and serialized names. The runtime remains offline and
   best-effort, and the public `dbg!` evaluation/return/stderr behavior is
-  unchanged.
+  unchanged. Compatibility note: automatic discovery is emitted by the derive;
+  a hand-written `HasSpytialDecorators` implementation is no longer sufficient
+  by itself for `diagram()` and should pass `T::decorators()` through
+  `diagram_with_spec`.
 
 - Fixed: a relation's type signature is no longer frozen by whichever tuple
   arrived first (#79). Relations are keyed by name in one flat namespace, so

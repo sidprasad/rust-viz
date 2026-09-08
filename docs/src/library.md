@@ -20,6 +20,12 @@ function returns `()`. No source location, and it borrows rather than
 moves. Any `Serialize` value works. A `SpytialDecorators` derive is detected
 automatically when present, but is not required.
 
+Automatic discovery comes from the derive's link-time registration. If you
+implement `HasSpytialDecorators` by hand, `diagram()` cannot conditionally
+detect that trait implementation on stable Rust. Call `T::decorators()`, encode
+it with `spytial_annotations::to_yaml`, and pass it to `diagram_with_spec`
+instead.
+
 ## `diagram_with_spec(&value, spec)` — hand-written constraints
 
 ```rust
