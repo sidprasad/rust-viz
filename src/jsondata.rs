@@ -72,7 +72,7 @@ pub struct ITuple {
 /// (two structs that each have a `name` field, say) share one relation.
 ///
 /// Examples: a field relation `name(Person, atom)`, a sequence relation
-/// `idx(sequence, index, atom)`, or a map relation `map_entry(map, atom, atom)`.
+/// `idx(sequence, u64, atom)`, or a map relation `map_entry(map, atom, atom)`.
 /// The target position is always the literal `"atom"`, the universal type.
 ///
 /// Tuples normally share one arity. The exception is a struct field that
