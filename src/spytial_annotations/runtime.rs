@@ -43,6 +43,21 @@ pub struct SpytialDecorators {
     pub directives: Vec<Directive>,
 }
 
+impl SpytialDecorators {
+    pub(crate) fn extend_unique(&mut self, other: Self) {
+        for constraint in other.constraints {
+            if !self.constraints.contains(&constraint) {
+                self.constraints.push(constraint);
+            }
+        }
+        for directive in other.directives {
+            if !self.directives.contains(&directive) {
+                self.directives.push(directive);
+            }
+        }
+    }
+}
+
 /// A layout/structural constraint on the diagram.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
@@ -725,6 +740,55 @@ pub trait HasSpytialDecorators {
     fn decorators() -> SpytialDecorators;
 }
 
+/// One derive-generated entry in the link-time decorator registry.
+///
+/// This is public only so [`SpytialDecorators`](spytial_export_macros::SpytialDecorators)
+/// expansions in downstream crates can submit entries. Applications should
+/// not construct registrations directly.
+#[doc(hidden)]
+pub struct DecoratorRegistration {
+    rust_type_name: fn() -> &'static str,
+    rust_type_name_is_generic: bool,
+    rust_short_type_name: &'static str,
+    serialized_type_name: &'static str,
+    decorators: fn() -> SpytialDecorators,
+}
+
+impl DecoratorRegistration {
+    /// Construct a derive-generated registration.
+    #[doc(hidden)]
+    pub const fn new(
+        rust_type_name: fn() -> &'static str,
+        rust_type_name_is_generic: bool,
+        rust_short_type_name: &'static str,
+        serialized_type_name: &'static str,
+        decorators: fn() -> SpytialDecorators,
+    ) -> Self {
+        Self {
+            rust_type_name,
+            rust_type_name_is_generic,
+            rust_short_type_name,
+            serialized_type_name,
+            decorators,
+        }
+    }
+
+    fn matches_root_type(&self, root_type_name: &str) -> bool {
+        let registered_name = (self.rust_type_name)();
+        root_type_name == registered_name
+            || (self.rust_type_name_is_generic
+                && root_type_name
+                    .strip_prefix(registered_name)
+                    .is_some_and(|suffix| suffix.starts_with('<')))
+    }
+
+    fn matches_serialized_type(&self, type_name: &str) -> bool {
+        self.rust_short_type_name == type_name || self.serialized_type_name == type_name
+    }
+}
+
+inventory::collect!(DecoratorRegistration);
+
 impl<T: HasSpytialDecorators + ?Sized> HasSpytialDecorators for &T {
     fn decorators() -> SpytialDecorators {
         T::decorators()
@@ -794,15 +858,93 @@ pub fn register_type_decorators(type_name: &str, decorators: SpytialDecorators) 
     registry.insert(type_name.to_string(), decorators);
 }
 
-/// Look up previously-registered decorators for `type_name`, if any.
+/// Look up explicitly registered decorators for `type_name`, if any.
 ///
 /// Returns `None` if the type has never had its `decorators()` method called
-/// (and therefore never registered itself with the global registry).
+/// (and therefore never registered itself with the global registry), and no
+/// caller has registered the name manually.
 pub fn get_type_decorators(type_name: &str) -> Option<SpytialDecorators> {
-    let registry = TYPE_REGISTRY
+    TYPE_REGISTRY
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    registry.get(type_name).cloned()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(type_name)
+        .cloned()
+}
+
+enum RegistrationMatch {
+    None,
+    Unique(&'static DecoratorRegistration),
+    Ambiguous,
+}
+
+fn unique_registration(
+    mut matches: impl Iterator<Item = &'static DecoratorRegistration>,
+) -> RegistrationMatch {
+    let Some(first) = matches.next() else {
+        return RegistrationMatch::None;
+    };
+    if matches.next().is_some() {
+        RegistrationMatch::Ambiguous
+    } else {
+        RegistrationMatch::Unique(first)
+    }
+}
+
+fn serialized_decorators_for_registration(
+    registration: &DecoratorRegistration,
+) -> SpytialDecorators {
+    get_type_decorators((registration.rust_type_name)())
+        .or_else(|| get_type_decorators(registration.serialized_type_name))
+        .or_else(|| get_type_decorators(registration.rust_short_type_name))
+        .unwrap_or_else(|| (registration.decorators)())
+}
+
+fn peel_references(mut type_name: &str) -> &str {
+    loop {
+        let Some(rest) = type_name.strip_prefix('&') else {
+            return type_name;
+        };
+        type_name = rest.trim_start();
+        if let Some(rest) = type_name.strip_prefix("mut ") {
+            type_name = rest;
+        }
+    }
+}
+
+/// Resolve the concrete root type before Serde has a chance to erase its
+/// identity (for example through `#[serde(transparent)]` or `untagged`).
+pub(crate) fn get_linked_root_type_decorators(root_type_name: &str) -> Option<SpytialDecorators> {
+    let root_type_name = peel_references(root_type_name);
+    match unique_registration(
+        inventory::iter::<DecoratorRegistration>
+            .into_iter()
+            .filter(|registration| registration.matches_root_type(root_type_name)),
+    ) {
+        // Once the qualified root has selected its registration, do not fall
+        // back to an unqualified runtime key: another same-named type may have
+        // populated it. Only the exact concrete key can override this entry.
+        RegistrationMatch::Unique(registration) => {
+            Some(get_type_decorators(root_type_name).unwrap_or_else(|| (registration.decorators)()))
+        }
+        RegistrationMatch::None | RegistrationMatch::Ambiguous => None,
+    }
+}
+
+/// Resolve the name exposed by a Serde callback. These names are unqualified,
+/// so an ambiguous match must contribute nothing rather than silently mixing
+/// decorators from unrelated types.
+pub(crate) fn get_linked_serialized_type_decorators(type_name: &str) -> Option<SpytialDecorators> {
+    match unique_registration(
+        inventory::iter::<DecoratorRegistration>
+            .into_iter()
+            .filter(|registration| registration.matches_serialized_type(type_name)),
+    ) {
+        RegistrationMatch::None => get_type_decorators(type_name),
+        RegistrationMatch::Unique(registration) => {
+            Some(serialized_decorators_for_registration(registration))
+        }
+        RegistrationMatch::Ambiguous => None,
+    }
 }
 
 /// Serialize a [`SpytialDecorators`] value to its YAML wire format.

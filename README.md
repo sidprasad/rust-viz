@@ -14,9 +14,9 @@ Rust value in your browser instead of printing nested text:
 
 Your terminal output is unchanged; one browser viewer opens for the process
 and collects every subsequent capture in execution order. Select a capture to
-see its expression, source location, thread, and diagram. The layout is
-controlled by declarative decorators on your types, and all viewer assets are
-bundled for offline use.
+see its expression, source location, thread, and diagram. Optional declarative
+decorators refine the layout, and all viewer assets are bundled for offline
+use.
 
 ```rust
 spytial::dbg!(&state); // opens the viewer and adds capture 1
@@ -36,7 +36,16 @@ spytial = "0.1"
 serde = { version = "1", features = ["derive"] }
 ```
 
-Diagrammed types need `Debug`, `Serialize`, and `#[derive(SpytialDecorators)]`.
+`spytial::dbg!` accepts any `Debug + Serialize` value, including direct
+standard-library collections:
+
+```rust
+spytial::dbg!(&vec![1, 2, 3]);
+```
+
+`diagram(&value)` only needs `Serialize`. Add `#[derive(SpytialDecorators)]`
+when you want type-specific layout or styling; it is an enrichment, not a
+requirement.
 
 ## Docs
 

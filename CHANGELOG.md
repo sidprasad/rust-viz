@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Changed: `spytial::dbg!` now accepts any `Debug + Serialize` value and
+  `diagram()` accepts any `Serialize` value; `SpytialDecorators` is optional
+  enrichment rather than a gate (#91). Derives submit a qualified Rust type
+  identity and their rules to a link-time registry, so existing decorated
+  types still apply root and transitive nested decorators automatically while
+  direct `Vec`, `HashMap`, third-party, and undecorated user values render with
+  the default structural layout. The qualified root is resolved before Serde can
+  erase it for `transparent` or `untagged` representations; unqualified Serde
+  names are used only when they identify one registration, preventing
+  same-named types in different modules from mixing decorators. Serde-renamed
+  types are registered under both their Rust and serialized names. The public
+  runtime registry continues to report only explicit registrations. The
+  runtime remains offline and
+  best-effort, and the public `dbg!` evaluation/return/stderr behavior is
+  unchanged. Compatibility note: automatic discovery is emitted by the derive;
+  a hand-written `HasSpytialDecorators` implementation is no longer sufficient
+  by itself for `diagram()` and should pass `T::decorators()` through
+  `diagram_with_spec`.
+
 - Added a persistent, process-local viewer session for `spytial::dbg!` (#92).
   Repeated and multi-argument calls now append ordered capture envelopes to one
   viewer instead of opening one tab per value. Each envelope contains a unique

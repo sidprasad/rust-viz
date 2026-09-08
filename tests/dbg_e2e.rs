@@ -8,7 +8,10 @@
 
 use serde::Serialize;
 use spytial::export::try_export_json_instance;
+use spytial::jsondata::JsonDataInstance;
+use spytial::spytial_annotations::HasSpytialDecorators;
 use spytial::{dbg, dbg_in, diagram, export_json_instance, SpytialDecorators, ViewerSession};
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,6 +19,64 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread;
 use std::time::SystemTime;
+
+#[derive(Debug, Serialize)]
+struct UndecoratedUser {
+    name: String,
+}
+
+#[derive(Debug, Serialize, SpytialDecorators)]
+#[serde(rename = "SerializedRegisteredChild")]
+#[attribute(field = "nested_registration_marker")]
+struct RegisteredChild {
+    nested_registration_marker: String,
+}
+
+#[derive(Debug, Serialize, SpytialDecorators)]
+#[serde(rename(
+    serialize = "SerializedRegisteredParent",
+    deserialize = "RegisteredParent"
+))]
+#[hide_field(field = "parent_registration_marker")]
+#[hide_atom(selector = "ROOT_REGISTRATION_SELECTOR")]
+struct RegisteredParent {
+    parent_registration_marker: String,
+    child: Option<RegisteredChild>,
+}
+
+#[derive(Debug, Serialize, SpytialDecorators)]
+#[serde(transparent)]
+#[hide_atom(selector = "TRANSPARENT_ROOT_SELECTOR")]
+struct TransparentRoot(String);
+
+#[derive(Debug, Serialize, SpytialDecorators)]
+#[serde(untagged)]
+#[hide_atom(selector = "UNTAGGED_ROOT_SELECTOR")]
+#[allow(dead_code)]
+enum UntaggedRoot {
+    Text(String),
+    Number(i32),
+}
+
+mod collision_left {
+    use super::*;
+
+    #[derive(Debug, Serialize, SpytialDecorators)]
+    #[hide_atom(selector = "LEFT_ITEM_SELECTOR")]
+    pub struct Item {
+        pub value: String,
+    }
+}
+
+mod collision_right {
+    use super::*;
+
+    #[derive(Debug, Serialize, SpytialDecorators)]
+    #[hide_atom(selector = "RIGHT_ITEM_SELECTOR")]
+    pub struct Item {
+        pub value: String,
+    }
+}
 
 /// Suppress browser launch for every test in this file. `SPYTIAL_NO_OPEN`
 /// is read by both output paths; setting it to "1" makes `dbg!` write its
@@ -60,6 +121,37 @@ fn unique_output_path(tag: &str) -> PathBuf {
     env::temp_dir().join(format!("spytial-e2e-{tag}-{pid}-{counter}-{nanos}.html"))
 }
 
+/// Parse the exact datum embedded in the self-contained HTML that the public
+/// diagram path writes. This checks the hand-off to the browser, not merely a
+/// separate call to `export_json_instance`.
+fn embedded_datum(contents: &str) -> JsonDataInstance {
+    let (_, after_marker) = contents
+        .split_once("const jsonData = `")
+        .expect("rendered HTML should declare its JSON datum");
+    let (json, _) = after_marker
+        .split_once("`;")
+        .expect("rendered HTML should terminate its JSON datum");
+    serde_json::from_str(json).expect("embedded diagram datum should be valid JSON")
+}
+
+/// Parse the capture envelopes embedded in a persistent viewer snapshot.
+fn embedded_captures(contents: &str) -> Vec<serde_json::Value> {
+    let (_, after_marker) = contents
+        .split_once("const initialCaptures = JSON.parse(")
+        .expect("session HTML should declare its initial captures");
+    let (literal, _) = after_marker
+        .split_once(");")
+        .expect("session HTML should terminate its initial captures");
+    let json: String =
+        serde_json::from_str(literal).expect("initial captures should be a JSON string literal");
+    serde_json::from_str(&json).expect("embedded captures should be valid JSON")
+}
+
+fn capture_datum(capture: &serde_json::Value) -> JsonDataInstance {
+    serde_json::from_value(capture["datum"].clone())
+        .expect("capture datum should use the JsonDataInstance shape")
+}
+
 // ──────────────────────────────────────────────
 // 1. dbg!(x) returns the value (move form)
 // ──────────────────────────────────────────────
@@ -74,6 +166,205 @@ fn dbg_returns_value() {
     let _guard = diagram_lock();
     let y = dbg!(W(42));
     assert_eq!(y.0, 42, "dbg!(W(42)) must return the value through");
+}
+
+#[test]
+fn dbg_accepts_direct_vec_and_hash_map_values() {
+    suppress_browser_open();
+
+    let target = unique_output_path("collections-datum");
+    let _guard = diagram_lock();
+    env::set_var("SPYTIAL_OUTPUT_PATH", &target);
+    let session = ViewerSession::named("collection-datum-test");
+
+    let values = vec![1, 2, 3];
+    // The default macro accepts the direct collection; the explicit session
+    // then gives this test a deterministic snapshot to inspect.
+    let public_returned_values = dbg!(&values);
+    assert_eq!(public_returned_values, &vec![1, 2, 3]);
+    let returned_values = dbg_in!(&session; &values);
+    assert_eq!(returned_values, &vec![1, 2, 3]);
+    let captures = embedded_captures(
+        &fs::read_to_string(&target).expect("dbg_in! should write the Vec session HTML"),
+    );
+    assert_eq!(captures.len(), 1);
+    let sequence = capture_datum(&captures[0]);
+    assert_eq!(sequence.atoms[0].r#type, "sequence");
+    assert!(sequence
+        .atoms
+        .iter()
+        .any(|atom| atom.r#type == "i32" && atom.label == "3"));
+    assert_eq!(
+        sequence
+            .relations
+            .iter()
+            .find(|relation| relation.name == "idx")
+            .expect("Vec datum should contain an idx relation")
+            .tuples
+            .len(),
+        3
+    );
+
+    let users = HashMap::from([("Ada", 1), ("Grace", 2)]);
+    let returned_users = dbg_in!(&session; &users);
+    assert_eq!(returned_users.get("Ada"), Some(&1));
+    assert_eq!(returned_users.get("Grace"), Some(&2));
+    let captures = embedded_captures(
+        &fs::read_to_string(&target).expect("dbg_in! should update the HashMap session HTML"),
+    );
+    assert_eq!(captures.len(), 2);
+    let map = capture_datum(&captures[1]);
+    assert_eq!(map.atoms[0].r#type, "map");
+    assert!(map.atoms.iter().any(|atom| atom.label == "Ada"));
+    assert!(map.atoms.iter().any(|atom| atom.label == "Grace"));
+    assert_eq!(
+        map.relations
+            .iter()
+            .find(|relation| relation.name == "map_entry")
+            .expect("HashMap datum should contain a map_entry relation")
+            .tuples
+            .len(),
+        2
+    );
+
+    env::remove_var("SPYTIAL_OUTPUT_PATH");
+    drop(_guard);
+    let _ = fs::remove_file(&target);
+}
+
+#[test]
+fn undecorated_user_type_works_with_dbg_and_diagram() {
+    suppress_browser_open();
+
+    let value = UndecoratedUser {
+        name: "Ada".to_string(),
+    };
+    let target = unique_output_path("undecorated");
+
+    let _guard = diagram_lock();
+    env::set_var("SPYTIAL_OUTPUT_PATH", &target);
+    let session = ViewerSession::named("undecorated-test");
+    let borrowed = dbg_in!(&session; &value);
+    assert_eq!(borrowed.name, "Ada");
+    let session_html =
+        fs::read_to_string(&target).expect("dbg_in! should capture an undecorated value");
+    let captures = embedded_captures(&session_html);
+    assert_eq!(
+        capture_datum(&captures[0]).atoms[0].r#type,
+        "UndecoratedUser"
+    );
+    diagram(&value);
+    let read_result = fs::read_to_string(&target);
+    env::remove_var("SPYTIAL_OUTPUT_PATH");
+    drop(_guard);
+
+    let contents = read_result.expect("diagram() should render an undecorated Serialize value");
+    let datum = embedded_datum(&contents);
+    assert_eq!(datum.atoms[0].r#type, "UndecoratedUser");
+    assert!(datum
+        .atoms
+        .iter()
+        .any(|atom| atom.r#type == "string" && atom.label == "Ada"));
+    assert!(datum
+        .relations
+        .iter()
+        .any(|relation| relation.name == "name" && relation.tuples.len() == 1));
+    let _ = fs::remove_file(&target);
+}
+
+#[test]
+fn diagram_applies_registered_root_and_nested_decorators() {
+    suppress_browser_open();
+
+    // Keep the child absent: transitive collection must come from the type
+    // registration rather than happening accidentally while serializing a
+    // child value.
+    let value = RegisteredParent {
+        parent_registration_marker: "present".to_string(),
+        child: None,
+    };
+    let target = unique_output_path("registered-decorators");
+
+    let _guard = diagram_lock();
+    env::set_var("SPYTIAL_OUTPUT_PATH", &target);
+    diagram(&value);
+    let read_result = fs::read_to_string(&target);
+    env::remove_var("SPYTIAL_OUTPUT_PATH");
+    drop(_guard);
+
+    let contents = read_result.expect("diagram() should render a decorated value");
+    assert!(
+        contents.contains("ROOT_REGISTRATION_SELECTOR"),
+        "the root type's registered decorator should be embedded"
+    );
+    assert!(
+        contents.contains("nested_registration_marker"),
+        "the absent nested type's decorator should be collected transitively"
+    );
+    let _ = fs::remove_file(&target);
+}
+
+#[test]
+fn anonymous_serde_roots_keep_their_decorators() {
+    suppress_browser_open();
+
+    let transparent = TransparentRoot("visible value".to_string());
+    let untagged = UntaggedRoot::Text("visible variant".to_string());
+    let target = unique_output_path("anonymous-serde-roots");
+
+    let _guard = diagram_lock();
+    env::set_var("SPYTIAL_OUTPUT_PATH", &target);
+    let session = ViewerSession::named("anonymous-serde-test");
+
+    let returned = dbg_in!(&session; &transparent);
+    assert_eq!(returned.0, "visible value");
+    let transparent_html =
+        fs::read_to_string(&target).expect("dbg_in! should render a transparent root");
+    let captures = embedded_captures(&transparent_html);
+    assert!(captures[0]["spytial_spec"]
+        .as_str()
+        .expect("capture should contain a Spytial spec")
+        .contains("TRANSPARENT_ROOT_SELECTOR"));
+
+    diagram(&untagged);
+    let untagged_html =
+        fs::read_to_string(&target).expect("diagram should render an untagged root");
+    assert!(untagged_html.contains("UNTAGGED_ROOT_SELECTOR"));
+
+    env::remove_var("SPYTIAL_OUTPUT_PATH");
+    drop(_guard);
+    let _ = fs::remove_file(&target);
+}
+
+#[test]
+fn same_short_type_names_do_not_mix_decorators() {
+    suppress_browser_open();
+
+    let left = collision_left::Item {
+        value: "left".to_string(),
+    };
+    // Referencing the second type keeps both inventory entries in this test
+    // binary; only the left value is diagrammed.
+    let right = collision_right::Item {
+        value: "right".to_string(),
+    };
+    assert_eq!(right.value, "right");
+    // Exercise the old runtime registry too: its short `Item` key now points
+    // at the right-hand type, but exact root discovery must still select left.
+    let _ = collision_right::Item::decorators();
+    let target = unique_output_path("same-short-type-name");
+
+    let _guard = diagram_lock();
+    env::set_var("SPYTIAL_OUTPUT_PATH", &target);
+    diagram(&left);
+    let read_result = fs::read_to_string(&target);
+    env::remove_var("SPYTIAL_OUTPUT_PATH");
+    drop(_guard);
+
+    let contents = read_result.expect("diagram should render the selected Item type");
+    assert!(contents.contains("LEFT_ITEM_SELECTOR"));
+    assert!(!contents.contains("RIGHT_ITEM_SELECTOR"));
+    let _ = fs::remove_file(&target);
 }
 
 // ──────────────────────────────────────────────
@@ -282,6 +573,7 @@ fn diagram_writes_html_file() {
     suppress_browser_open();
 
     #[derive(Debug, Serialize, SpytialDecorators)]
+    #[hide_atom(selector = "LOCAL_DERIVE_REGISTRATION_SELECTOR")]
     struct Marker {
         unique_marker_field: String,
     }
@@ -324,6 +616,10 @@ fn diagram_writes_html_file() {
         contents.contains("Marker"),
         "rendered HTML at {} should reference the struct type name",
         target.display(),
+    );
+    assert!(
+        contents.contains("LOCAL_DERIVE_REGISTRATION_SELECTOR"),
+        "a derive on a function-local type should still register decorators",
     );
 
     // Best-effort cleanup.

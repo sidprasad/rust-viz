@@ -1,7 +1,7 @@
 //! Persistent viewer sessions used by [`crate::dbg!`] and [`crate::dbg_in!`].
 
-use crate::spytial_annotations::HasSpytialDecorators;
-use crate::{collect_spytial_spec_for_diagram, export_json_instance};
+use crate::export::export_json_instance_and_decorators;
+use crate::spytial_annotations::to_yaml;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::env;
@@ -138,9 +138,10 @@ impl ViewerSession {
     /// the caller of this method. For strict [`std::dbg!`] behavior and the
     /// original expression text, use [`crate::dbg_in!`]. Like every viewer
     /// operation, this method is best-effort and never panics on transport or
-    /// output failure.
+    /// output failure. Any [`Serialize`] value works; deriving
+    /// [`crate::SpytialDecorators`] optionally enriches its layout.
     #[track_caller]
-    pub fn diagram<T: HasSpytialDecorators + Serialize>(&self, value: &T) {
+    pub fn diagram<T: Serialize>(&self, value: &T) {
         let caller = std::panic::Location::caller();
         self.capture(
             value,
@@ -151,7 +152,7 @@ impl ViewerSession {
         );
     }
 
-    pub(crate) fn capture<T: HasSpytialDecorators + Serialize>(
+    pub(crate) fn capture<T: Serialize>(
         &self,
         value: &T,
         expression: &str,
@@ -159,8 +160,8 @@ impl ViewerSession {
         line: u32,
         column: u32,
     ) {
-        let datum = export_json_instance(value);
-        let spec = collect_spytial_spec_for_diagram(value);
+        let (datum, decorators) = export_json_instance_and_decorators(value);
+        let spec = to_yaml(&decorators).unwrap_or_default();
         let thread = std::thread::current();
         let timestamp_unix_ms = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)

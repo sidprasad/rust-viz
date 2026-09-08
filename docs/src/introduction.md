@@ -56,8 +56,10 @@ fn main() {
 ```
 
 `cargo run` prints the usual `dbg!` line to your terminal and opens the
-tree as the first capture in your browser. [Getting started](./getting-started.md) walks
-through the same example line by line.
+tree as the first capture in your browser. [Getting started](./getting-started.md)
+walks through the same example line by line. The `SpytialDecorators` derive and
+`#[attribute]` are optional: any `Debug + Serialize` value gets a structural
+diagram, and these additions make that diagram more informative.
 
 ## Shape the layout with decorators
 
@@ -72,8 +74,8 @@ hidden:
 #[orientation(selector = "{x, y : Node | x->y in right}", directions = ["right", "below"])]
 ```
 
-Decorators are collected at compile time across nested types, so you
-decorate `Node` once and every `Node` in the value picks up the rules.
+Decorators are registered at link time and collected across nested types, so
+you decorate `Node` once and every `Node` in the value picks up the rules.
 See [Decorators](./decorators.md) for the full reference and a red-black
 tree built up one rule at a time.
 
@@ -82,10 +84,12 @@ tree built up one rule at a time.
 Three steps, all built into the crate, so diagrams work offline with no
 network calls:
 
-1. `#[derive(SpytialDecorators)]` collects your decorators at compile time.
-2. `dbg!(&value)` walks the value through serde into atoms and relations and
-   appends an envelope containing its expression, source, time, and thread.
-3. That data and your decorators fill a self-contained HTML session,
+1. `dbg!(&value)` walks any `Debug + Serialize` value through serde into atoms
+   and relations, then appends an envelope containing its expression, source,
+   time, and thread.
+2. If a type derives `SpytialDecorators`, its link-time registration contributes
+   layout and styling rules automatically, including rules from nested types.
+3. That data and any decorators fill a self-contained HTML session,
    rendered in the browser by a bundled copy of
    [spytial-core](https://github.com/sidprasad/spytial-core).
 
