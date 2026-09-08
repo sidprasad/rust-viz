@@ -11,7 +11,7 @@ use spytial::export::try_export_json_instance;
 use spytial::{dbg, dbg_in, diagram, export_json_instance, SpytialDecorators, ViewerSession};
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread;
@@ -155,9 +155,12 @@ fn named_session_records_multi_argument_captures_and_metadata() {
         contents.contains("parser"),
         "session name should be embedded"
     );
-    let escaped_source_file = serde_json::to_string(file!()).expect("serialize source filename");
+    let source_file_name = Path::new(file!())
+        .file_name()
+        .expect("source filename")
+        .to_string_lossy();
     assert!(
-        contents.contains(escaped_source_file.trim_matches('"')),
+        contents.contains(source_file_name.as_ref()),
         "source filename should be embedded"
     );
     assert!(contents.contains("timestamp_unix_ms"));
