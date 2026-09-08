@@ -16,8 +16,9 @@
 //! Field names become relation names because a field names a role fixed at
 //! compile time; a map key stays an atom inside the tuple because it's runtime
 //! data. Enum variants follow the same rules, keyed on the variant's atom.
-//! Payload-free values — `None`, `()`, `true`/`false`, unit variants — are
-//! interned as singletons so equal values share a node.
+//! Primitive values are identified by the value Serde exposes, so equal values
+//! of the same exposed type share an atom. Composite values remain distinct
+//! serialized occurrences because Serde does not expose their Rust identity.
 
 use crate::jsondata::*;
 use crate::spytial_annotations::SpytialDecorators;
@@ -152,8 +153,9 @@ pub(crate) struct JsonDataSerializer {
     collected_decorators: SpytialDecorators,
     visited_types: std::collections::HashSet<String>,
     exclude_type: Option<String>,
-    /// Cache for singleton atoms (like None, unit, etc.) that should be reused
-    singleton_atoms: HashMap<(String, String), String>, // (type, label) -> atom_id
+    /// Cache for value-semantic atoms. Serde identifies these by type and value,
+    /// so repeated occurrences should refer to the same relational atom.
+    value_atoms: HashMap<(String, String), String>, // (type, serialized value) -> atom_id
 }
 
 impl JsonDataSerializer {
@@ -165,7 +167,7 @@ impl JsonDataSerializer {
             collected_decorators: SpytialDecorators::default(),
             visited_types: std::collections::HashSet::new(),
             exclude_type: None,
-            singleton_atoms: HashMap::new(),
+            value_atoms: HashMap::new(),
         }
     }
 
@@ -185,17 +187,25 @@ impl JsonDataSerializer {
         id
     }
 
-    /// Get or create a singleton atom - atoms that should only exist once
-    /// (like None, unit, true, false, etc.)
-    fn get_or_create_singleton(&mut self, typ: &str, label: &str) -> String {
-        let key = (typ.to_string(), label.to_string());
+    /// Get or create the atom for a value Serde exposes directly.
+    fn get_or_create_value_atom(&mut self, typ: &str, label: &str) -> String {
+        self.get_or_create_value_atom_with_key(typ, label, label)
+    }
 
-        if let Some(existing_id) = self.singleton_atoms.get(&key) {
+    fn get_or_create_value_atom_with_key(
+        &mut self,
+        typ: &str,
+        value_key: &str,
+        label: &str,
+    ) -> String {
+        let key = (typ.to_string(), value_key.to_string());
+
+        if let Some(existing_id) = self.value_atoms.get(&key) {
             return existing_id.clone();
         }
 
         let id = self.emit_atom(typ, label);
-        self.singleton_atoms.insert(key, id.clone());
+        self.value_atoms.insert(key, id.clone());
         id
     }
 
@@ -304,78 +314,91 @@ impl<'a> Serializer for &'a mut JsonDataSerializer {
 
     // Primitive types
     fn serialize_bool(self, v: bool) -> Result<Self::Ok, Self::Error> {
-        // Booleans are singletons - there's only one true and one false
-        Ok(self.get_or_create_singleton("bool", &v.to_string()))
+        Ok(self.get_or_create_value_atom("bool", &v.to_string()))
     }
 
     fn serialize_i8(self, v: i8) -> Result<Self::Ok, Self::Error> {
-        Ok(self.emit_atom("i8", &v.to_string()))
+        Ok(self.get_or_create_value_atom("i8", &v.to_string()))
     }
 
     fn serialize_i16(self, v: i16) -> Result<Self::Ok, Self::Error> {
-        Ok(self.emit_atom("i16", &v.to_string()))
+        Ok(self.get_or_create_value_atom("i16", &v.to_string()))
     }
 
     fn serialize_i32(self, v: i32) -> Result<Self::Ok, Self::Error> {
-        Ok(self.emit_atom("i32", &v.to_string()))
+        Ok(self.get_or_create_value_atom("i32", &v.to_string()))
     }
 
     fn serialize_i64(self, v: i64) -> Result<Self::Ok, Self::Error> {
-        Ok(self.emit_atom("i64", &v.to_string()))
+        Ok(self.get_or_create_value_atom("i64", &v.to_string()))
     }
 
     fn serialize_i128(self, v: i128) -> Result<Self::Ok, Self::Error> {
-        Ok(self.emit_atom("i128", &v.to_string()))
+        Ok(self.get_or_create_value_atom("i128", &v.to_string()))
     }
 
     fn serialize_u8(self, v: u8) -> Result<Self::Ok, Self::Error> {
-        Ok(self.emit_atom("u8", &v.to_string()))
+        Ok(self.get_or_create_value_atom("u8", &v.to_string()))
     }
 
     fn serialize_u16(self, v: u16) -> Result<Self::Ok, Self::Error> {
-        Ok(self.emit_atom("u16", &v.to_string()))
+        Ok(self.get_or_create_value_atom("u16", &v.to_string()))
     }
 
     fn serialize_u32(self, v: u32) -> Result<Self::Ok, Self::Error> {
-        Ok(self.emit_atom("u32", &v.to_string()))
+        Ok(self.get_or_create_value_atom("u32", &v.to_string()))
     }
 
     fn serialize_u64(self, v: u64) -> Result<Self::Ok, Self::Error> {
-        Ok(self.emit_atom("u64", &v.to_string()))
+        Ok(self.get_or_create_value_atom("u64", &v.to_string()))
     }
 
     fn serialize_u128(self, v: u128) -> Result<Self::Ok, Self::Error> {
-        Ok(self.emit_atom("u128", &v.to_string()))
+        Ok(self.get_or_create_value_atom("u128", &v.to_string()))
     }
 
     fn serialize_f32(self, v: f32) -> Result<Self::Ok, Self::Error> {
-        Ok(self.emit_atom("f32", &v.to_string()))
+        let label = v.to_string();
+        if v.is_nan() {
+            // NaN is not equal to itself under Rust's PartialEq semantics.
+            Ok(self.emit_atom("f32", &label))
+        } else {
+            // Rust considers -0.0 and 0.0 equal, despite their different bits.
+            let bits = if v == 0.0 { 0 } else { v.to_bits() };
+            Ok(self.get_or_create_value_atom_with_key("f32", &bits.to_string(), &label))
+        }
     }
 
     fn serialize_f64(self, v: f64) -> Result<Self::Ok, Self::Error> {
-        Ok(self.emit_atom("f64", &v.to_string()))
+        let label = v.to_string();
+        if v.is_nan() {
+            Ok(self.emit_atom("f64", &label))
+        } else {
+            let bits = if v == 0.0 { 0 } else { v.to_bits() };
+            Ok(self.get_or_create_value_atom_with_key("f64", &bits.to_string(), &label))
+        }
     }
 
     fn serialize_char(self, v: char) -> Result<Self::Ok, Self::Error> {
-        Ok(self.emit_atom("char", &v.to_string()))
+        Ok(self.get_or_create_value_atom("char", &v.to_string()))
     }
 
     fn serialize_str(self, v: &str) -> Result<Self::Ok, Self::Error> {
-        Ok(self.emit_atom("string", v))
+        Ok(self.get_or_create_value_atom("string", v))
     }
 
     fn serialize_bytes(self, v: &[u8]) -> Result<Self::Ok, Self::Error> {
-        Ok(self.emit_atom("bytes", &format!("{:?}", v)))
+        Ok(self.get_or_create_value_atom("bytes", &format!("{:?}", v)))
     }
 
     fn serialize_none(self) -> Result<Self::Ok, Self::Error> {
-        Ok(self.get_or_create_singleton("None", "None"))
+        Ok(self.get_or_create_value_atom("None", "None"))
     }
 
     fn serialize_some<T: ?Sized + Serialize>(self, value: &T) -> Result<Self::Ok, Self::Error> {
         // Unwrap `Some` by default: `Some(x)` shares `x`'s atom, keeping the
         // diagram clean (`Option<T>` points straight at the `T`). But when the
-        // inner is itself absent/optional — a `None` singleton or another `Some`
+        // inner is itself absent/optional — a `None` atom or another `Some`
         // wrapper — insert a `Some` wrapper atom so `Some(None)` stays distinct
         // from `None` and arbitrarily nested options remain recoverable.
         let inner_id = value.serialize(&mut *self)?;
@@ -399,13 +422,11 @@ impl<'a> Serializer for &'a mut JsonDataSerializer {
     }
 
     fn serialize_unit(self) -> Result<Self::Ok, Self::Error> {
-        // Unit () is a singleton
-        Ok(self.get_or_create_singleton("unit", "()"))
+        Ok(self.get_or_create_value_atom("unit", "()"))
     }
 
     fn serialize_unit_struct(self, name: &str) -> Result<Self::Ok, Self::Error> {
-        // Unit structs are singletons - only one instance of each unit struct type exists
-        Ok(self.get_or_create_singleton("unit_struct", name))
+        Ok(self.get_or_create_value_atom("unit_struct", name))
     }
 
     fn serialize_unit_variant(
@@ -414,8 +435,7 @@ impl<'a> Serializer for &'a mut JsonDataSerializer {
         _variant_index: u32,
         variant: &str,
     ) -> Result<Self::Ok, Self::Error> {
-        // Unit variants are singletons: Color::Red is always the same value.
-        Ok(self.get_or_create_singleton(enum_name, variant))
+        Ok(self.get_or_create_value_atom(enum_name, variant))
     }
 
     fn serialize_newtype_struct<T: ?Sized + Serialize>(
@@ -560,11 +580,13 @@ impl<'a> SerializeSeq for SequenceSerializer<'a> {
 
     fn serialize_element<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), Self::Error> {
         let element_id = value.serialize(&mut *self.serializer)?;
+        let index_id = self.index.serialize(&mut *self.serializer)?;
         // idx(container, position, element) for O(1) indexable sequences
         self.serializer.push_relation(
             "idx",
-            vec![self.seq_id.clone(), self.index.to_string(), element_id],
-            vec!["sequence", "index", "atom"],
+            vec![self.seq_id.clone(), index_id, element_id],
+            // Serde exposes usize through serialize_u64.
+            vec!["sequence", "u64", "atom"],
         );
         self.index += 1;
         Ok(())
@@ -588,11 +610,12 @@ impl<'a> SerializeTuple for TupleSerializer<'a> {
 
     fn serialize_element<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), Self::Error> {
         let element_id = value.serialize(&mut *self.serializer)?;
+        let index_id = self.index.serialize(&mut *self.serializer)?;
         // Tuples also use idx - fixed positional semantics
         self.serializer.push_relation(
             "idx",
-            vec![self.tuple_id.clone(), self.index.to_string(), element_id],
-            vec!["tuple", "index", "atom"],
+            vec![self.tuple_id.clone(), index_id, element_id],
+            vec!["tuple", "u64", "atom"],
         );
         self.index += 1;
         Ok(())
@@ -616,11 +639,12 @@ impl<'a> SerializeTupleStruct for TupleStructSerializer<'a> {
 
     fn serialize_field<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), Self::Error> {
         let field_id = value.serialize(&mut *self.serializer)?;
+        let index_id = self.index.serialize(&mut *self.serializer)?;
         // Tuple structs have positional semantics
         self.serializer.push_relation(
             "idx",
-            vec![self.struct_id.clone(), self.index.to_string(), field_id],
-            vec!["tuple_struct", "index", "atom"],
+            vec![self.struct_id.clone(), index_id, field_id],
+            vec!["tuple_struct", "u64", "atom"],
         );
         self.index += 1;
         Ok(())
@@ -644,10 +668,11 @@ impl<'a> SerializeTupleVariant for TupleVariantSerializer<'a> {
 
     fn serialize_field<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), Self::Error> {
         let field_id = value.serialize(&mut *self.serializer)?;
+        let index_id = self.index.serialize(&mut *self.serializer)?;
         self.serializer.push_relation(
             "idx",
-            vec![self.variant_id.clone(), self.index.to_string(), field_id],
-            vec![&self.variant_type, "index", "atom"],
+            vec![self.variant_id.clone(), index_id, field_id],
+            vec![&self.variant_type, "u64", "atom"],
         );
         self.index += 1;
         Ok(())

@@ -144,11 +144,73 @@ fn vec_field_produces_idx_relations() {
     let idx_rel = relation(&inst, "idx");
     assert_eq!(idx_rel.tuples.len(), 3, "one idx tuple per element");
 
-    // Verify positional indices "0", "1", "2" appear in the tuples
-    let indices: Vec<&str> = idx_rel.tuples.iter().map(|t| t.atoms[1].as_str()).collect();
+    // Tuple positions refer to ordinary u64 atoms because that is how Serde
+    // exposes usize. Their labels retain the Rust index values.
+    let indices: Vec<&str> = idx_rel
+        .tuples
+        .iter()
+        .map(|t| atom_by_id(&inst, &t.atoms[1]).label.as_str())
+        .collect();
     assert!(indices.contains(&"0"));
     assert!(indices.contains(&"1"));
     assert!(indices.contains(&"2"));
+    assert!(idx_rel
+        .tuples
+        .iter()
+        .all(|t| atom_by_id(&inst, &t.atoms[1]).r#type == "u64"));
+}
+
+#[derive(Serialize)]
+struct Positional(u8, u8);
+
+#[derive(Serialize)]
+enum PositionalVariant {
+    Values(u8, u8),
+}
+
+#[derive(Serialize)]
+struct AllPositionalShapes {
+    ordinary_zero: u64,
+    sequence: Vec<u8>,
+    tuple: (u8, u8),
+    tuple_struct: Positional,
+    tuple_variant: PositionalVariant,
+}
+
+#[test]
+fn every_idx_position_is_a_declared_serde_value() {
+    let inst = export_json_instance(&AllPositionalShapes {
+        ordinary_zero: 0,
+        sequence: vec![10, 11],
+        tuple: (20, 21),
+        tuple_struct: Positional(30, 31),
+        tuple_variant: PositionalVariant::Values(40, 41),
+    });
+
+    let idx = relation(&inst, "idx");
+    assert_eq!(idx.tuples.len(), 8, "all four positional emitters ran");
+
+    let declared: std::collections::HashSet<&str> =
+        inst.atoms.iter().map(|atom| atom.id.as_str()).collect();
+    for tuple in &idx.tuples {
+        assert!(tuple.atoms.iter().all(|id| declared.contains(id.as_str())));
+        assert_eq!(atom_by_id(&inst, &tuple.atoms[1]).r#type, "u64");
+    }
+
+    let positions = atoms_by_type(&inst, "u64");
+    assert_eq!(positions.len(), 2, "equal positions share value atoms");
+    assert!(positions.iter().any(|atom| atom.label == "0"));
+    assert!(positions.iter().any(|atom| atom.label == "1"));
+    assert_eq!(
+        relation(&inst, "ordinary_zero").tuples[0].atoms[1],
+        idx.tuples
+            .iter()
+            .map(|tuple| &tuple.atoms[1])
+            .find(|id| atom_by_id(&inst, id).label == "0")
+            .expect("idx should contain position zero")
+            .as_str(),
+        "an index and an ordinary u64 share the value Serde exposes",
+    );
 }
 
 // ──────────────────────────────────────────────
@@ -238,7 +300,7 @@ fn unit_enum_variant_becomes_typed_atom() {
 }
 
 // ──────────────────────────────────────────────
-// 6. None singletons are deduplicated
+// 6. Equal None values share an atom
 // ──────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -261,7 +323,7 @@ fn none_atoms_are_deduplicated() {
 }
 
 // ──────────────────────────────────────────────
-// 7. Boolean singletons are deduplicated
+// 7. Equal primitive values share atoms
 // ──────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -271,7 +333,7 @@ struct Flags {
 }
 
 #[test]
-fn boolean_atoms_are_singletons() {
+fn equal_boolean_values_share_an_atom() {
     let val = Flags { a: true, b: true };
     let inst = export_json_instance(&val);
 
@@ -284,6 +346,51 @@ fn boolean_atoms_are_singletons() {
         true_atoms.len(),
         1,
         "both `true` values should share one atom"
+    );
+}
+
+#[derive(Serialize)]
+struct RepeatedValues {
+    first_number: u32,
+    second_number: u32,
+    first_string: String,
+    second_string: String,
+    positive_zero: f64,
+    negative_zero: f64,
+    first_nan: f64,
+    second_nan: f64,
+}
+
+#[test]
+fn primitive_atoms_follow_rust_value_equality() {
+    let inst = export_json_instance(&RepeatedValues {
+        first_number: 7,
+        second_number: 7,
+        first_string: "same".into(),
+        second_string: "same".into(),
+        positive_zero: 0.0,
+        negative_zero: -0.0,
+        first_nan: f64::NAN,
+        second_nan: f64::NAN,
+    });
+
+    assert_eq!(
+        relation(&inst, "first_number").tuples[0].atoms[1],
+        relation(&inst, "second_number").tuples[0].atoms[1],
+    );
+    assert_eq!(
+        relation(&inst, "first_string").tuples[0].atoms[1],
+        relation(&inst, "second_string").tuples[0].atoms[1],
+    );
+    assert_eq!(
+        relation(&inst, "positive_zero").tuples[0].atoms[1],
+        relation(&inst, "negative_zero").tuples[0].atoms[1],
+        "Rust considers positive and negative zero equal",
+    );
+    assert_ne!(
+        relation(&inst, "first_nan").tuples[0].atoms[1],
+        relation(&inst, "second_nan").tuples[0].atoms[1],
+        "Rust considers NaN unequal even to itself",
     );
 }
 
@@ -848,7 +955,7 @@ fn field_colliding_with_different_arity_builtin_keeps_longest_header() {
     assert_eq!(seq_tuples.len(), 2);
     assert_eq!(field_tuples[0].types, vec!["HasIdx", "atom"]);
     for tuple in seq_tuples {
-        assert_eq!(tuple.types, vec!["sequence", "index", "atom"]);
+        assert_eq!(tuple.types, vec!["sequence", "u64", "atom"]);
     }
 }
 
