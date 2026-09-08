@@ -10,11 +10,11 @@ use serde::Serialize;
 use spytial::export::try_export_json_instance;
 use spytial::jsondata::JsonDataInstance;
 use spytial::spytial_annotations::HasSpytialDecorators;
-use spytial::{dbg, diagram, export_json_instance, SpytialDecorators};
+use spytial::{dbg, dbg_in, diagram, export_json_instance, SpytialDecorators, ViewerSession};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread;
@@ -79,8 +79,9 @@ mod collision_right {
 }
 
 /// Suppress browser launch for every test in this file. `SPYTIAL_NO_OPEN`
-/// is read by the `diagram` implementation; setting it to "1" makes the
-/// macro and `diagram` write the temp HTML file but skip `open`/`xdg-open`.
+/// is read by both output paths; setting it to "1" makes `dbg!` write its
+/// persistent session file without starting the loopback server and makes
+/// `diagram` write its standalone file without calling `open`/`xdg-open`.
 ///
 /// The env var is process-global and we never unset it, so it's safe for
 /// parallel tests to all set the same value.
@@ -91,11 +92,11 @@ fn suppress_browser_open() {
 /// Cross-test coordination for any test that calls `dbg!`/`diagram`.
 ///
 /// `SPYTIAL_OUTPUT_PATH` is process-global, so when
-/// `diagram_writes_html_file` sets it, every other concurrent `dbg!`
-/// call in this binary would route its write to that same path and
-/// clobber the marker before it is read.  To avoid that, every test
-/// that triggers `diagram` (directly or via `dbg!`) acquires this
-/// mutex for the duration of its diagram-producing work.
+/// `diagram_writes_html_file` sets it, concurrent standalone output could
+/// clobber the marker. The default viewer also reads the variable once on its
+/// first capture, so it must not be initialized inside another test's override
+/// window. Every test that renders (directly or through a debug macro) acquires
+/// this mutex for the duration of its output-producing work.
 ///
 /// We use `unwrap_or_else(PoisonError::into_inner)` so one failed test
 /// does not cascade into spurious failures of the rest.
@@ -133,6 +134,24 @@ fn embedded_datum(contents: &str) -> JsonDataInstance {
     serde_json::from_str(json).expect("embedded diagram datum should be valid JSON")
 }
 
+/// Parse the capture envelopes embedded in a persistent viewer snapshot.
+fn embedded_captures(contents: &str) -> Vec<serde_json::Value> {
+    let (_, after_marker) = contents
+        .split_once("const initialCaptures = JSON.parse(")
+        .expect("session HTML should declare its initial captures");
+    let (literal, _) = after_marker
+        .split_once(");")
+        .expect("session HTML should terminate its initial captures");
+    let json: String =
+        serde_json::from_str(literal).expect("initial captures should be a JSON string literal");
+    serde_json::from_str(&json).expect("embedded captures should be valid JSON")
+}
+
+fn capture_datum(capture: &serde_json::Value) -> JsonDataInstance {
+    serde_json::from_value(capture["datum"].clone())
+        .expect("capture datum should use the JsonDataInstance shape")
+}
+
 // ──────────────────────────────────────────────
 // 1. dbg!(x) returns the value (move form)
 // ──────────────────────────────────────────────
@@ -156,13 +175,20 @@ fn dbg_accepts_direct_vec_and_hash_map_values() {
     let target = unique_output_path("collections-datum");
     let _guard = diagram_lock();
     env::set_var("SPYTIAL_OUTPUT_PATH", &target);
+    let session = ViewerSession::named("collection-datum-test");
 
     let values = vec![1, 2, 3];
-    let returned_values = dbg!(&values);
+    // The default macro accepts the direct collection; the explicit session
+    // then gives this test a deterministic snapshot to inspect.
+    let public_returned_values = dbg!(&values);
+    assert_eq!(public_returned_values, &vec![1, 2, 3]);
+    let returned_values = dbg_in!(&session; &values);
     assert_eq!(returned_values, &vec![1, 2, 3]);
-    let sequence = embedded_datum(
-        &fs::read_to_string(&target).expect("dbg! should write the Vec diagram HTML"),
+    let captures = embedded_captures(
+        &fs::read_to_string(&target).expect("dbg_in! should write the Vec session HTML"),
     );
+    assert_eq!(captures.len(), 1);
+    let sequence = capture_datum(&captures[0]);
     assert_eq!(sequence.atoms[0].r#type, "sequence");
     assert!(sequence
         .atoms
@@ -180,12 +206,14 @@ fn dbg_accepts_direct_vec_and_hash_map_values() {
     );
 
     let users = HashMap::from([("Ada", 1), ("Grace", 2)]);
-    let returned_users = dbg!(&users);
+    let returned_users = dbg_in!(&session; &users);
     assert_eq!(returned_users.get("Ada"), Some(&1));
     assert_eq!(returned_users.get("Grace"), Some(&2));
-    let map = embedded_datum(
-        &fs::read_to_string(&target).expect("dbg! should write the HashMap diagram HTML"),
+    let captures = embedded_captures(
+        &fs::read_to_string(&target).expect("dbg_in! should update the HashMap session HTML"),
     );
+    assert_eq!(captures.len(), 2);
+    let map = capture_datum(&captures[1]);
     assert_eq!(map.atoms[0].r#type, "map");
     assert!(map.atoms.iter().any(|atom| atom.label == "Ada"));
     assert!(map.atoms.iter().any(|atom| atom.label == "Grace"));
@@ -215,8 +243,16 @@ fn undecorated_user_type_works_with_dbg_and_diagram() {
 
     let _guard = diagram_lock();
     env::set_var("SPYTIAL_OUTPUT_PATH", &target);
-    let borrowed = dbg!(&value);
+    let session = ViewerSession::named("undecorated-test");
+    let borrowed = dbg_in!(&session; &value);
     assert_eq!(borrowed.name, "Ada");
+    let session_html =
+        fs::read_to_string(&target).expect("dbg_in! should capture an undecorated value");
+    let captures = embedded_captures(&session_html);
+    assert_eq!(
+        capture_datum(&captures[0]).atoms[0].r#type,
+        "UndecoratedUser"
+    );
     diagram(&value);
     let read_result = fs::read_to_string(&target);
     env::remove_var("SPYTIAL_OUTPUT_PATH");
@@ -278,12 +314,17 @@ fn anonymous_serde_roots_keep_their_decorators() {
 
     let _guard = diagram_lock();
     env::set_var("SPYTIAL_OUTPUT_PATH", &target);
+    let session = ViewerSession::named("anonymous-serde-test");
 
-    let returned = dbg!(&transparent);
+    let returned = dbg_in!(&session; &transparent);
     assert_eq!(returned.0, "visible value");
     let transparent_html =
-        fs::read_to_string(&target).expect("dbg! should render a transparent root");
-    assert!(transparent_html.contains("TRANSPARENT_ROOT_SELECTOR"));
+        fs::read_to_string(&target).expect("dbg_in! should render a transparent root");
+    let captures = embedded_captures(&transparent_html);
+    assert!(captures[0]["spytial_spec"]
+        .as_str()
+        .expect("capture should contain a Spytial spec")
+        .contains("TRANSPARENT_ROOT_SELECTOR"));
 
     diagram(&untagged);
     let untagged_html =
@@ -369,6 +410,54 @@ fn dbg_tuple_form_returns_tuple() {
     let (a, b) = dbg!(W(1), W(2));
     assert_eq!(a.0, 1);
     assert_eq!(b.0, 2);
+}
+
+#[test]
+fn named_session_records_multi_argument_captures_and_metadata() {
+    suppress_browser_open();
+
+    #[derive(Debug, Serialize, SpytialDecorators)]
+    struct W(i32);
+
+    let target = unique_output_path("named-session");
+    let _guard = diagram_lock();
+    env::set_var("SPYTIAL_OUTPUT_PATH", &target);
+
+    let session = ViewerSession::named("parser");
+    let (first, second) = dbg_in!(&session; W(10), W(20));
+    let read_result = fs::read_to_string(&target);
+    env::remove_var("SPYTIAL_OUTPUT_PATH");
+    drop(_guard);
+
+    assert_eq!((first.0, second.0), (10, 20));
+    let contents = read_result.unwrap_or_else(|error| {
+        panic!(
+            "named session should write {}; could not read: {error}",
+            target.display()
+        )
+    });
+    let first_position = contents.find("W(10)").expect("first expression metadata");
+    let second_position = contents.find("W(20)").expect("second expression metadata");
+    assert!(
+        first_position < second_position,
+        "captures should stay ordered"
+    );
+    assert!(
+        contents.contains("parser"),
+        "session name should be embedded"
+    );
+    let source_file_name = Path::new(file!())
+        .file_name()
+        .expect("source filename")
+        .to_string_lossy();
+    assert!(
+        contents.contains(source_file_name.as_ref()),
+        "source filename should be embedded"
+    );
+    assert!(contents.contains("timestamp_unix_ms"));
+    assert!(contents.contains("ThreadId("));
+
+    let _ = fs::remove_file(target);
 }
 
 // ──────────────────────────────────────────────
@@ -540,12 +629,10 @@ fn diagram_writes_html_file() {
 // ──────────────────────────────────────────────
 // 8. Concurrent dbg! calls do not panic
 //
-// 4 threads each call `dbg!(W(i))` 5 times.  None should panic.  The
-// new `diagram_output_path()` picks a unique path per call (pid + atomic
-// counter + nanos), so there is no shared-file collision to demonstrate
-// — but threads can still race on stderr buffering, env-var reads, and
-// the serializer's internals.  This test confirms those paths are
-// thread-safe.
+// 4 threads each call `dbg!(W(i))` 5 times. None should panic or lose its
+// returned value while the default session serializes their captures into one
+// ordered stream. The focused session unit test also inspects that stream for
+// contiguous sequence numbers and the expected capture count.
 //
 // The outer test fn holds `diagram_lock` so it doesn't race with
 // `diagram_writes_html_file` setting `SPYTIAL_OUTPUT_PATH`.  The

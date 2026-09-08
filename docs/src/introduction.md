@@ -22,10 +22,11 @@ indentation. Spytial draws it for you — change one word:
 + spytial::dbg!(tree)
 ```
 
-Your terminal output is unchanged; a browser tab also opens with a diagram
-of the value. `spytial::dbg!` takes the same arguments as `std::dbg!` and
-returns the value the same way, so you can drop it in anywhere `std::dbg!`
-already appears.
+Your terminal output is unchanged; a browser viewer also opens with a diagram
+of the value. Repeated calls append to that same viewer, creating an ordered
+execution trail instead of a row of tabs. `spytial::dbg!` takes the same
+arguments as `std::dbg!` and returns the value the same way, so you can drop it
+in anywhere `std::dbg!` already appears.
 
 ## Run it now
 
@@ -55,8 +56,8 @@ fn main() {
 ```
 
 `cargo run` prints the usual `dbg!` line to your terminal and opens the
-tree in your browser. [Getting started](./getting-started.md) walks
-through the same example line by line. The `SpytialDecorators` derive and
+tree as the first capture in your browser. [Getting started](./getting-started.md)
+walks through the same example line by line. The `SpytialDecorators` derive and
 `#[attribute]` are optional: any `Debug + Serialize` value gets a structural
 diagram, and these additions make that diagram more informative.
 
@@ -83,17 +84,20 @@ tree built up one rule at a time.
 Three steps, all built into the crate, so diagrams work offline with no
 network calls:
 
-1. `diagram(&value)` walks any `Serialize` value through serde into atoms and
-   relations.
+1. `dbg!(&value)` walks any `Debug + Serialize` value through serde into atoms
+   and relations, then appends an envelope containing its expression, source,
+   time, and thread.
 2. If a type derives `SpytialDecorators`, its link-time registration contributes
    layout and styling rules automatically, including rules from nested types.
-3. That data and any decorators fill a self-contained HTML template,
+3. That data and any decorators fill a self-contained HTML session,
    rendered in the browser by a bundled copy of
    [spytial-core](https://github.com/sidprasad/spytial-core).
 
-Failures never panic: a serialization error, a missing temp dir, or no
-browser to open all log a one-line warning and return. `dbg!(x)` always
-returns `x`.
+The live viewer polls an in-process server bound to an OS-selected port on
+`127.0.0.1`; it never exposes captured values to the LAN and makes no external
+network requests. Failures never panic: a serialization error, a missing temp
+dir, a failed loopback bind, or no browser to open all log a one-line warning
+and return. `dbg!(x)` always returns `x`.
 
 ## Where next
 

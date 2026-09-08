@@ -1,12 +1,14 @@
-//! Spytial is a drop-in replacement for [`std::dbg!`] that opens an
-//! interactive diagram of Rust values in the browser.
+//! Spytial is a drop-in replacement for [`std::dbg!`] that appends interactive
+//! diagrams of Rust values to one persistent browser viewer.
 //!
 //! The crate-level entry points are [`dbg!`] (a strict superset of
-//! [`std::dbg!`]) and [`diagram`] (no stderr, doesn't move). [`diagram`] works
+//! [`std::dbg!`]) and [`diagram`] (standalone output, no stderr, doesn't move).
+//! [`diagram`] works
 //! with any [`serde::Serialize`] value; [`dbg!`] additionally requires
 //! [`std::fmt::Debug`] to preserve [`std::dbg!`]'s terminal output.
 //! [`SpytialDecorators`] is optional and enriches the automatic layout when
-//! derived.
+//! derived. Use [`ViewerSession`] with [`dbg_in!`] when one process needs
+//! separate, named capture streams.
 //!
 //! Start with the guide at <https://sidprasad.github.io/spytial-rust/> for the
 //! tutorial, decorator reference, and architecture notes. The README on
@@ -20,11 +22,14 @@ pub mod export;
 pub mod jsondata;
 /// Reconstruct Rust values from the relational [`jsondata`] shape (inverse of [`export`]).
 pub mod reify;
+/// Persistent capture sessions and their loopback viewer transport.
+pub mod session;
 /// SpyTial decorator types, derive-macro runtime, and YAML serialization.
 pub mod spytial_annotations;
 
 pub use export::export_json_instance;
 pub use reify::{from_datum, from_datum_root, replit, replit_root, ReifyError};
+pub use session::ViewerSession;
 // Re-export the derive macro for spatial annotations
 use serde::Serialize;
 pub use spytial_export_macros::SpytialDecorators;
@@ -123,7 +128,7 @@ pub fn diagram_with_spec<T: Serialize>(value: &T, spec: &str) {
 }
 
 /// Strict superset of [`std::dbg!`]: prints the `Debug` representation to
-/// stderr *and* opens an interactive diagram of the value in your browser.
+/// stderr and appends an interactive diagram to the process viewer.
 ///
 /// The calling convention matches `std::dbg!` exactly, so swapping
 /// `std::dbg!` for `spytial::dbg!` (or `use spytial::dbg;`) is purely
@@ -132,10 +137,10 @@ pub fn diagram_with_spec<T: Serialize>(value: &T, spec: &str) {
 ///
 /// - `dbg!()` — prints the source location, opens nothing.
 /// - `dbg!(expr)` — evaluates `expr`, prints `[file:line:col] expr = …` to
-///   stderr (using `{:#?}`), opens a diagram in the browser, and returns
-///   the value through.
-/// - `dbg!(a, b, …)` — returns a tuple `(a, b, …)`. Each argument is
-///   diagrammed (opens one tab per argument).
+///   stderr (using `{:#?}`), appends a capture to the process viewer, and
+///   returns the value through.
+/// - `dbg!(a, b, …)` — returns a tuple `(a, b, …)` and appends each argument
+///   as a separate ordered capture in the same viewer.
 ///
 /// The expression's type must implement [`std::fmt::Debug`] and
 /// [`serde::Serialize`]. Deriving [`SpytialDecorators`] is optional; when
@@ -162,7 +167,7 @@ pub fn diagram_with_spec<T: Serialize>(value: &T, spec: &str) {
 ///     right: Some(Box::new(Node { key: 7, left: None, right: None })),
 /// };
 ///
-/// // Drop in for `std::dbg!`: prints Debug + opens a diagram,
+/// // Drop in for `std::dbg!`: prints Debug + appends a viewer capture,
 /// // returns `tree` through for further use.
 /// let tree = dbg!(tree);
 /// ```
@@ -198,7 +203,13 @@ macro_rules! dbg {
                     ::std::stringify!($val),
                     &tmp,
                 );
-                $crate::diagram(&tmp);
+                $crate::__capture_dbg(
+                    &tmp,
+                    ::std::stringify!($val),
+                    ::std::file!(),
+                    ::std::line!(),
+                    ::std::column!(),
+                );
                 tmp
             }
         }
@@ -206,6 +217,89 @@ macro_rules! dbg {
     ($($val:expr),+ $(,)?) => {
         ($($crate::dbg!($val)),+,)
     };
+}
+
+/// Capture values in an explicit [`ViewerSession`] while preserving
+/// [`std::dbg!`] evaluation, stderr, and return-value behavior.
+///
+/// The session expression comes before a semicolon; everything after it has
+/// the same forms and semantics as [`dbg!`]. Multi-argument calls append one
+/// ordered capture per argument.
+///
+/// ```no_run
+/// use serde::Serialize;
+/// use spytial::{dbg_in, SpytialDecorators, ViewerSession};
+///
+/// #[derive(Debug, Serialize, SpytialDecorators)]
+/// struct State(u32);
+///
+/// let session = ViewerSession::named("worker");
+/// let (one, two) = dbg_in!(&session; State(1), State(2));
+/// assert_eq!((one.0, two.0), (1, 2));
+/// ```
+#[macro_export]
+macro_rules! dbg_in {
+    ($session:expr;) => {
+        ::std::eprintln!(
+            "[{}:{}:{}]",
+            ::std::file!(),
+            ::std::line!(),
+            ::std::column!(),
+        )
+    };
+    ($session:expr; $val:expr $(,)?) => {
+        match $val {
+            tmp => {
+                ::std::eprintln!(
+                    "[{}:{}:{}] {} = {:#?}",
+                    ::std::file!(),
+                    ::std::line!(),
+                    ::std::column!(),
+                    ::std::stringify!($val),
+                    &tmp,
+                );
+                $crate::__capture_dbg_in(
+                    $session,
+                    &tmp,
+                    ::std::stringify!($val),
+                    ::std::file!(),
+                    ::std::line!(),
+                    ::std::column!(),
+                );
+                tmp
+            }
+        }
+    };
+    ($session:expr; $($val:expr),+ $(,)?) => {
+        match &$session {
+            session => ($($crate::dbg_in!(session; $val)),+,)
+        }
+    };
+}
+
+/// Implementation detail used by the exported [`dbg!`] macro.
+#[doc(hidden)]
+pub fn __capture_dbg<T: Serialize>(
+    value: &T,
+    expression: &str,
+    file: &str,
+    line: u32,
+    column: u32,
+) {
+    session::default_session().capture(value, expression, file, line, column);
+}
+
+/// Implementation detail used by the exported [`dbg_in!`] macro.
+#[doc(hidden)]
+pub fn __capture_dbg_in<T: Serialize>(
+    session: &ViewerSession,
+    value: &T,
+    expression: &str,
+    file: &str,
+    line: u32,
+    column: u32,
+) {
+    session.capture(value, expression, file, line, column);
 }
 
 /// Internal implementation shared by diagram functions.

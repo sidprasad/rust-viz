@@ -26,6 +26,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by itself for `diagram()` and should pass `T::decorators()` through
   `diagram_with_spec`.
 
+- Added a persistent, process-local viewer session for `spytial::dbg!` (#92).
+  Repeated and multi-argument calls now append ordered capture envelopes to one
+  viewer instead of opening one tab per value. Each envelope contains a unique
+  session id, monotonic sequence, expression, source file/line/column,
+  millisecond timestamp, thread id/name, relational datum, and Spytial spec.
+  Concurrent callers are serialized without losing captures. The live viewer
+  uses a dependency-free in-process HTTP server bound only to `127.0.0.1` on an
+  OS-selected port and polls for new captures; all rendering assets remain
+  bundled and offline. `SPYTIAL_NO_OPEN` starts neither server nor browser but
+  still builds the full session snapshot. `SPYTIAL_OUTPUT_PATH` is read at
+  session creation and atomically refreshed with a self-contained HTML file
+  that remains usable after process exit. New `ViewerSession` and `dbg_in!`
+  APIs provide explicit named capture streams. Standalone `diagram()` behavior
+  is unchanged. Viewer/output failures remain best-effort and cannot alter the
+  value returned by `dbg!`.
+
 - Fixed: a relation's type signature is no longer frozen by whichever tuple
   arrived first (#79). Relations are keyed by name in one flat namespace, so
   two structs with a same-named field share one relation; its header `types`

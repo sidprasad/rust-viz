@@ -12,9 +12,21 @@ Rust value in your browser instead of printing nested text:
 + spytial::dbg!(tree)
 ```
 
-Your terminal output is unchanged; a browser tab also opens with a structural
-diagram of the value. Optional declarative decorators refine its layout and
-styling.
+Your terminal output is unchanged; one browser viewer opens for the process
+and collects every subsequent capture in execution order. Select a capture to
+see its expression, source location, thread, and diagram. Optional declarative
+decorators refine the layout, and all viewer assets are bundled for offline
+use.
+
+```rust
+spytial::dbg!(&state); // opens the viewer and adds capture 1
+step();
+spytial::dbg!(&state); // same viewer, capture 2
+```
+
+Set `SPYTIAL_NO_OPEN=1` for a fully headless run. The complete session is
+continuously written to a self-contained HTML file in the OS temp directory;
+set `SPYTIAL_OUTPUT_PATH=/path/to/session.html` to choose that file.
 
 ## Install
 
