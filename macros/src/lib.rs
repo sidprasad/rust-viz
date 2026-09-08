@@ -501,31 +501,55 @@ pub fn derive_spytial_decorators(input: TokenStream) -> TokenStream {
         Data::Enum(_) | Data::Union(_) => Vec::new(),
     };
 
-    let nested_type_names: Vec<_> = field_type_decorators
-        .iter()
-        .map(|(name, _)| name.clone())
-        .collect();
-
     // Combine own decorators with field type decorators.
     decorator_calls.extend(field_type_decorators.into_iter().map(|(_, call)| call));
+
+    // A concrete type can report the exact identity used by
+    // `std::any::type_name`. Generic registrations are emitted only once, not
+    // once per monomorphization, so they use their qualified constructor name
+    // and the runtime treats it as a generic prefix.
+    let has_generic_parameters = !generics.params.is_empty();
+    // A link-time registration is emitted outside the generated generic impl,
+    // so generic parameters are unavailable there. Concrete types can safely
+    // retain the complete compile-time decorator walk; generic roots retain
+    // their own decorators and discover concrete nested values through Serde.
+    let registered_decorator_calls = if has_generic_parameters {
+        &own_decorator_calls
+    } else {
+        &decorator_calls
+    };
+    let registered_rust_type_name = if has_generic_parameters {
+        quote! {
+            concat!(module_path!(), "::", stringify!(#name))
+        }
+    } else {
+        quote! {
+            ::std::any::type_name::<#name>()
+        }
+    };
 
     // Generate the HasSpytialDecorators implementation
     let expanded = quote! {
         #(#deprecation_shims)*
 
         const _: () = {
+            fn registered_rust_type_name() -> &'static str {
+                #registered_rust_type_name
+            }
+
             fn registered_decorators() -> spytial::spytial_annotations::SpytialDecorators {
                 spytial::spytial_annotations::SpytialDecoratorsBuilder::new()
-                    #(#own_decorator_calls)*
+                    #(#registered_decorator_calls)*
                     .build()
             }
 
             spytial::__private::inventory::submit! {
                 spytial::spytial_annotations::DecoratorRegistration::new(
+                    registered_rust_type_name,
+                    #has_generic_parameters,
                     stringify!(#name),
                     #serialized_name,
                     registered_decorators,
-                    &[#(#nested_type_names),*],
                 )
             }
         };
@@ -544,6 +568,10 @@ pub fn derive_spytial_decorators(input: TokenStream) -> TokenStream {
                     );
                     spytial::spytial_annotations::register_type_decorators(
                         #serialized_name,
+                        decorators.clone()
+                    );
+                    spytial::spytial_annotations::register_type_decorators(
+                        ::std::any::type_name::<Self>(),
                         decorators.clone()
                     );
                 });

@@ -109,6 +109,7 @@ pub(crate) fn export_json_instance_and_decorators<T: Serialize>(
     value: &T,
 ) -> (JsonDataInstance, SpytialDecorators) {
     let mut serializer = JsonDataSerializer::new();
+    serializer.collect_root_decorators::<T>();
     if let Err(err) = value.serialize(&mut serializer) {
         eprintln!(
             "spytial: serialization failed, returning empty instance: {}",
@@ -204,6 +205,19 @@ impl JsonDataSerializer {
         id
     }
 
+    /// Collect the exact root registration while Rust's concrete type identity
+    /// is still available. Some Serde representations intentionally erase the
+    /// wrapper name and would otherwise never reach a named callback.
+    fn collect_root_decorators<T: ?Sized>(&mut self) {
+        if let Some(decorators) =
+            crate::spytial_annotations::runtime::get_linked_root_type_decorators(
+                std::any::type_name::<T>(),
+            )
+        {
+            self.collected_decorators.extend_unique(decorators);
+        }
+    }
+
     fn emit_atom(&mut self, typ: &str, label: &str) -> String {
         let id = self.fresh_id();
         self.atoms.push(IAtom {
@@ -269,7 +283,9 @@ impl JsonDataSerializer {
             return;
         }
 
-        if let Some(type_decorators) = crate::spytial_annotations::get_type_decorators(type_name) {
+        if let Some(type_decorators) =
+            crate::spytial_annotations::runtime::get_linked_serialized_type_decorators(type_name)
+        {
             self.collected_decorators.extend_unique(type_decorators);
         }
     }

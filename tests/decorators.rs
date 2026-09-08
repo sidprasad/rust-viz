@@ -1,7 +1,8 @@
 use serde::Serialize;
 use spytial::spytial_annotations::{
-    to_yaml, Constraint, Directive, DrawEnd, GroupParams, HasSpytialDecorators, IconPlacement,
-    InferredEdgeDraw, SpytialDecorators as SpytialDecoratorsType, SpytialDecoratorsBuilder,
+    get_type_decorators, to_yaml, Constraint, Directive, DrawEnd, GroupParams,
+    HasSpytialDecorators, IconPlacement, InferredEdgeDraw,
+    SpytialDecorators as SpytialDecoratorsType, SpytialDecoratorsBuilder,
 };
 use spytial::SpytialDecorators;
 
@@ -11,6 +12,23 @@ use spytial::SpytialDecorators;
 #[flag(name = "hideDisconnected")]
 struct DerivedNode {
     id: u32,
+}
+
+#[derive(Serialize, SpytialDecorators)]
+#[hide_atom(selector = "LINK_TIME_ONLY_REGISTRY_PROBE")]
+struct LinkTimeOnlyRegistryProbe;
+
+#[test]
+fn public_registry_reports_only_runtime_registrations() {
+    assert!(get_type_decorators("LinkTimeOnlyRegistryProbe").is_none());
+
+    let decorators = LinkTimeOnlyRegistryProbe::decorators();
+    assert!(decorators
+        .constraints
+        .iter()
+        .any(|constraint| matches!(constraint, Constraint::HideAtom(_))));
+    assert!(get_type_decorators("LinkTimeOnlyRegistryProbe").is_some());
+    assert!(get_type_decorators(std::any::type_name::<LinkTimeOnlyRegistryProbe>()).is_some());
 }
 
 #[test]

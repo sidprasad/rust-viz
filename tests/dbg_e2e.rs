@@ -9,6 +9,7 @@
 use serde::Serialize;
 use spytial::export::try_export_json_instance;
 use spytial::jsondata::JsonDataInstance;
+use spytial::spytial_annotations::HasSpytialDecorators;
 use spytial::{dbg, diagram, export_json_instance, SpytialDecorators};
 use std::collections::HashMap;
 use std::env;
@@ -41,6 +42,40 @@ struct RegisteredChild {
 struct RegisteredParent {
     parent_registration_marker: String,
     child: Option<RegisteredChild>,
+}
+
+#[derive(Debug, Serialize, SpytialDecorators)]
+#[serde(transparent)]
+#[hide_atom(selector = "TRANSPARENT_ROOT_SELECTOR")]
+struct TransparentRoot(String);
+
+#[derive(Debug, Serialize, SpytialDecorators)]
+#[serde(untagged)]
+#[hide_atom(selector = "UNTAGGED_ROOT_SELECTOR")]
+#[allow(dead_code)]
+enum UntaggedRoot {
+    Text(String),
+    Number(i32),
+}
+
+mod collision_left {
+    use super::*;
+
+    #[derive(Debug, Serialize, SpytialDecorators)]
+    #[hide_atom(selector = "LEFT_ITEM_SELECTOR")]
+    pub struct Item {
+        pub value: String,
+    }
+}
+
+mod collision_right {
+    use super::*;
+
+    #[derive(Debug, Serialize, SpytialDecorators)]
+    #[hide_atom(selector = "RIGHT_ITEM_SELECTOR")]
+    pub struct Item {
+        pub value: String,
+    }
 }
 
 /// Suppress browser launch for every test in this file. `SPYTIAL_NO_OPEN`
@@ -230,6 +265,64 @@ fn diagram_applies_registered_root_and_nested_decorators() {
         contents.contains("nested_registration_marker"),
         "the absent nested type's decorator should be collected transitively"
     );
+    let _ = fs::remove_file(&target);
+}
+
+#[test]
+fn anonymous_serde_roots_keep_their_decorators() {
+    suppress_browser_open();
+
+    let transparent = TransparentRoot("visible value".to_string());
+    let untagged = UntaggedRoot::Text("visible variant".to_string());
+    let target = unique_output_path("anonymous-serde-roots");
+
+    let _guard = diagram_lock();
+    env::set_var("SPYTIAL_OUTPUT_PATH", &target);
+
+    let returned = dbg!(&transparent);
+    assert_eq!(returned.0, "visible value");
+    let transparent_html =
+        fs::read_to_string(&target).expect("dbg! should render a transparent root");
+    assert!(transparent_html.contains("TRANSPARENT_ROOT_SELECTOR"));
+
+    diagram(&untagged);
+    let untagged_html =
+        fs::read_to_string(&target).expect("diagram should render an untagged root");
+    assert!(untagged_html.contains("UNTAGGED_ROOT_SELECTOR"));
+
+    env::remove_var("SPYTIAL_OUTPUT_PATH");
+    drop(_guard);
+    let _ = fs::remove_file(&target);
+}
+
+#[test]
+fn same_short_type_names_do_not_mix_decorators() {
+    suppress_browser_open();
+
+    let left = collision_left::Item {
+        value: "left".to_string(),
+    };
+    // Referencing the second type keeps both inventory entries in this test
+    // binary; only the left value is diagrammed.
+    let right = collision_right::Item {
+        value: "right".to_string(),
+    };
+    assert_eq!(right.value, "right");
+    // Exercise the old runtime registry too: its short `Item` key now points
+    // at the right-hand type, but exact root discovery must still select left.
+    let _ = collision_right::Item::decorators();
+    let target = unique_output_path("same-short-type-name");
+
+    let _guard = diagram_lock();
+    env::set_var("SPYTIAL_OUTPUT_PATH", &target);
+    diagram(&left);
+    let read_result = fs::read_to_string(&target);
+    env::remove_var("SPYTIAL_OUTPUT_PATH");
+    drop(_guard);
+
+    let contents = read_result.expect("diagram should render the selected Item type");
+    assert!(contents.contains("LEFT_ITEM_SELECTOR"));
+    assert!(!contents.contains("RIGHT_ITEM_SELECTOR"));
     let _ = fs::remove_file(&target);
 }
 
