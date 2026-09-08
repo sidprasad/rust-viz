@@ -155,8 +155,9 @@ fn named_session_records_multi_argument_captures_and_metadata() {
         contents.contains("parser"),
         "session name should be embedded"
     );
+    let escaped_source_file = serde_json::to_string(file!()).expect("serialize source filename");
     assert!(
-        contents.contains(file!()),
+        contents.contains(escaped_source_file.trim_matches('"')),
         "source filename should be embedded"
     );
     assert!(contents.contains("timestamp_unix_ms"));
