@@ -141,6 +141,11 @@ fn embedded_spec(contents: &str) -> String {
 /// value. The literal cannot contain a raw newline, so `;\n` is a safe
 /// terminator for a whole statement.
 fn embedded_literal(contents: &str, marker: &str, terminator: &str) -> String {
+    // A Windows checkout has CRLF line endings, and the template is compiled
+    // in exactly as checked out, so there the statement ends `;\r\n`. A JSON
+    // string literal cannot hold a raw carriage return, so normalizing the
+    // whole page first cannot touch the literal itself.
+    let contents = contents.replace("\r\n", "\n");
     let (_, after_marker) = contents
         .split_once(marker)
         .unwrap_or_else(|| panic!("rendered HTML should contain `{marker}`"));
