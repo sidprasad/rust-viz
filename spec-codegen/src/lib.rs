@@ -23,20 +23,21 @@ use std::process::{Command, Stdio};
 
 /// Rust attribute name → the manifest item ids it is authored from.
 ///
-/// Most are 1:1. Two are not:
-///   * `group` merges `group` (selector-based) and `group.byField`, because the
-///     Rust attribute picks its shape from which keys are present.
-///   * `edge_style` merges `edgeStyle` and `edgeColor`, because the legacy flat
-///     keys desugar onto the same attribute.
+/// Most are 1:1. One is not: `edge_style` merges `edgeStyle` and `edgeColor`,
+/// because the legacy flat keys desugar onto the same attribute.
 ///
 /// `projection` is deliberately absent: no version of spytial-core parses it.
+/// `group.byField` is absent because spytial-core 5.1.0 removed it from the
+/// language outright — it is not deprecated, it no longer parses — so the
+/// derive rejects `#[group(field = ...)]` with an error naming the selector
+/// form rather than carrying a shape the engine would refuse.
 const ATTR_SOURCES: &[(&str, &[&str])] = &[
     ("attribute", &["attribute"]),
     ("flag", &["flag"]),
     ("orientation", &["orientation"]),
     ("align", &["align"]),
     ("cyclic", &["cyclic"]),
-    ("group", &["group", "group.byField"]),
+    ("group", &["group"]),
     ("atom_color", &["atomColor"]),
     ("atom_style", &["atomStyle"]),
     ("size", &["size"]),
@@ -111,8 +112,7 @@ const FIELD_SKIPS: &[(&str, &str)] = &[
 /// How to tell a deprecated *shape* apart from a current one, when the manifest
 /// does not say and the two share a Rust attribute.
 ///
-/// `group.byField` needs no entry — the manifest gives it a `discriminator`.
-/// `edgeColor` does not have one, because in YAML it is its own key; it is only
+/// `edgeColor` has no manifest discriminator, because in YAML it is its own key; it is only
 /// a shape here because the Rust attribute merges it into `#[edge_style]`. The
 /// keys below are exactly the legacy flat trio `parse_edge_style_args` reads.
 ///
@@ -202,6 +202,35 @@ struct Rule {
     /// is passed through and simply matches nothing.
     enforcement: Option<String>,
     default: Option<String>,
+    /// The manifest's declared arity for a selector-typed field.
+    arity: Option<String>,
+    /// Every result shape the field accepts (spytial-core 5.1's `accepts`).
+    accepts: Vec<Accepts>,
+}
+
+struct Accepts {
+    arity: String,
+    min_columns: Option<u64>,
+    max_columns: Option<u64>,
+    requires: Option<String>,
+    meaning: String,
+}
+
+fn accepts_of(field: &Value) -> Vec<Accepts> {
+    field["accepts"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .map(|a| Accepts {
+                    arity: a["arity"].as_str().unwrap_or_default().to_string(),
+                    min_columns: a["minColumns"].as_u64(),
+                    max_columns: a["maxColumns"].as_u64(),
+                    requires: a["requires"].as_str().map(str::to_string),
+                    meaning: a["meaning"].as_str().unwrap_or_default().to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn rules_for_fields(item_id: &str, fields: &[Value], out: &mut Vec<Rule>) {
@@ -238,6 +267,8 @@ fn rules_for_fields(item_id: &str, fields: &[Value], out: &mut Vec<Rule>) {
                 Value::String(s) => Some(s.clone()),
                 other => Some(other.to_string()),
             },
+            arity: f["arity"].as_str().map(str::to_string),
+            accepts: accepts_of(f),
         });
     }
 }
@@ -257,6 +288,13 @@ fn opt_str(v: &Option<String>) -> String {
     }
 }
 
+fn opt_u32(v: Option<u64>) -> String {
+    match v {
+        Some(n) => format!("Some({n})"),
+        None => "None".to_string(),
+    }
+}
+
 fn emit_rule(r: &Rule) -> String {
     let values = match &r.values {
         Some(vs) => {
@@ -265,8 +303,22 @@ fn emit_rule(r: &Rule) -> String {
         }
         None => "None".to_string(),
     };
+    let accepts: Vec<String> = r
+        .accepts
+        .iter()
+        .map(|a| {
+            format!(
+                "SelectorArity {{ arity: {:?}, min_columns: {}, max_columns: {}, requires: {}, meaning: {:?} }}",
+                a.arity,
+                opt_u32(a.min_columns),
+                opt_u32(a.max_columns),
+                opt_str(&a.requires),
+                a.meaning,
+            )
+        })
+        .collect();
     format!(
-        "FieldRule {{ key: {:?}, yaml: {:?}, values: {}, exclusive_min: {}, min: {}, max: {}, required: {}, enforcement: {}, default: {} }}",
+        "FieldRule {{ key: {:?}, yaml: {:?}, values: {}, exclusive_min: {}, min: {}, max: {}, required: {}, enforcement: {}, default: {}, arity: {}, accepts: &[{}] }}",
         r.key,
         r.yaml,
         values,
@@ -276,6 +328,8 @@ fn emit_rule(r: &Rule) -> String {
         r.required,
         opt_str(&r.enforcement),
         opt_str(&r.default),
+        opt_str(&r.arity),
+        accepts.join(", "),
     )
 }
 
@@ -386,6 +440,31 @@ pub struct FieldRule {{
     pub enforcement: Option<&'static str>,
     /// The value spytial-core assumes when the field is absent.
     pub default: Option<&'static str>,
+    /// For a selector-typed field, the arity the manifest declares for it.
+    pub arity: Option<&'static str>,
+    /// Every result shape a selector-typed field accepts, and what each means
+    /// (spytial-core 5.1). Empty for non-selector fields.
+    pub accepts: &'static [SelectorArity],
+}}
+
+/// One result shape a selector-typed field accepts.
+///
+/// Not enforced by the macro — a selector is an opaque string until it is
+/// evaluated against a datum — but carried so the derive's generated reference
+/// can say what each selector may return, and so a future selector parser has
+/// the rule to check against.
+#[derive(Debug)]
+pub struct SelectorArity {{
+    /// `unary`, `binary`, or `n-ary`.
+    pub arity: &'static str,
+    /// Fewest columns this shape covers.
+    pub min_columns: Option<u32>,
+    /// Most columns this shape covers; `None` is unbounded.
+    pub max_columns: Option<u32>,
+    /// Another key that must be present for this shape to do anything.
+    pub requires: Option<&'static str>,
+    /// What the engine does with a result of this shape.
+    pub meaning: &'static str,
 }}
 
 /// One authoring attribute, e.g. `#[orientation(...)]`.
@@ -502,6 +581,8 @@ pub fn block_spec(block: &str) -> Option<&'static BlockSpec> {{
                     required: false,
                     enforcement: None,
                     default: None,
+                    arity: None,
+                    accepts: Vec::new(),
                 });
             }
         }
@@ -692,6 +773,38 @@ pub fn block_spec(block: &str) -> Option<&'static BlockSpec> {{
     s.push_str(&dep_entries.join("\n"));
     s.push_str("\n];\n\n");
 
+    // ---- source block support (spytial-core 5.4) ----
+    //
+    // Which forms accept a `source: { text, location }` block, by YAML key,
+    // and which of those the viewer actually displays in conflict reports. The
+    // derive stamps every form in the first list; a macro test holds it to
+    // that, so a release that withdraws support fails loudly.
+    let source_list = |key: &str| -> Vec<String> {
+        man["source"][key]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(|v| format!("{v:?}"))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    s.push_str(&format!(
+        r#"/// Forms that accept a `source: {{ text, location }}` block (spytial-core 5.4),
+/// by YAML key. The derive stamps every one of them; `flag` is a bare scalar
+/// and has nowhere to carry one.
+pub static SOURCE_SUPPORTED_BY: &[&str] = &[{}];
+
+/// The forms whose `source` the viewer shows in conflict reports and
+/// warnings. On the rest it is parsed and ignored.
+pub static SOURCE_DISPLAYED_BY: &[&str] = &[{}];
+
+"#,
+        source_list("supportedBy").join(", "),
+        source_list("displayedBy").join(", "),
+    ));
+
     // ---- orientation list rules ----
     let orientation = find_item("orientation").ok_or("manifest has no `orientation` item")?;
     let list_rules = &orientation["fields"]
@@ -850,6 +963,15 @@ pub fn manifest_path() -> std::path::PathBuf {
         .join("spytial-language.json")
 }
 
+/// Path to the generated attribute reference the derive's rustdoc includes.
+pub fn reference_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("macros")
+        .join("src")
+        .join("attributes.md")
+}
+
 /// Path to the generated tables.
 pub fn tables_path() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -857,4 +979,428 @@ pub fn tables_path() -> std::path::PathBuf {
         .join("macros")
         .join("src")
         .join("spec_tables.rs")
+}
+
+// ---------------------------------------------------------------------------
+// The attribute reference: `macros/src/attributes.md`
+// ---------------------------------------------------------------------------
+
+/// Turn the manifest into the attribute reference the derive's rustdoc
+/// includes and the guide embeds.
+///
+/// The bullet list this replaces was hand-written and checked against the
+/// tables by eye. Generating it from the same manifest means a new key, a
+/// widened vocabulary, a changed default, or a new selector arity reaches the
+/// docs in the same commit that reaches the macro — and the drift test holds
+/// the checked-in file to it. Everything here is spytial-core's own wording;
+/// the only local additions are the Rust spellings and the block syntax.
+pub fn generate_reference(manifest_json: &str) -> Result<String, String> {
+    let man: Value = serde_json::from_str(manifest_json).map_err(|e| e.to_string())?;
+    let core_version = man["spytialCoreVersion"].as_str().unwrap_or("?");
+    let lang_version = man["languageVersion"].as_str().unwrap_or("?");
+    let items = man["items"].as_array().ok_or("manifest has no `items`")?;
+    let blocks = man["blocks"].as_array().ok_or("manifest has no `blocks`")?;
+    let find_item = |id: &str| item_by_id(items, id);
+    let docs = &man["documentation"];
+    let doc_link = |key: &str, label: &str| -> String {
+        match docs[key].as_str() {
+            Some(url) => format!("[{label}]({url})"),
+            None => label.to_string(),
+        }
+    };
+
+    let mut s = String::new();
+    s.push_str(&format!(
+        "<!-- @generated by spec-codegen from spytial-core {core_version} (layout-spec \
+         language {lang_version}). Do not edit; run `cargo run --manifest-path \
+         spec-codegen/Cargo.toml`. -->\n\n"
+    ));
+    s.push_str(&format!(
+        "Generated from spytial-core {core_version}'s language manifest, so every key, \
+         vocabulary, bound, default, and selector arity below is the engine's own \
+         description of the language (dated {lang_version}). Keys are the Rust spellings; \
+         `negated = true` is spytial-core's `hold: never`. Where a selector lists more than \
+         one accepted shape, the first is the one the field is designed for. spytial-core's \
+         own guides: {}, {}, {}, {}.\n\n",
+        doc_link("reference", "YAML reference"),
+        doc_link("constraints", "constraints"),
+        doc_link("directives", "directives"),
+        doc_link("selectors", "selectors"),
+    ));
+
+    for (heading, section) in [("Constraints", "constraints"), ("Directives", "directives")] {
+        s.push_str(&format!("## {heading}\n\n"));
+        for (attr, source_ids) in ATTR_SOURCES {
+            let primary = find_item(source_ids[0])
+                .ok_or_else(|| format!("manifest has no item `{}`", source_ids[0]))?;
+            let in_section = primary["sections"]
+                .as_array()
+                .map(|a| a.iter().any(|v| v.as_str() == Some(section)))
+                .unwrap_or(false);
+            if !in_section {
+                continue;
+            }
+            write_item_reference(&mut s, attr, source_ids, primary, items)?;
+        }
+    }
+
+    s.push_str("## Style blocks\n\n");
+    s.push_str(
+        "Blocks are written as nested groups that mirror the YAML: \
+         `line_style(color = \"gray\", pattern = \"dotted\")`. Every leaf is optional.\n\n",
+    );
+    for (yaml_name, rust_name) in BLOCK_SOURCES {
+        let block = blocks
+            .iter()
+            .find(|b| b["name"].as_str() == Some(yaml_name))
+            .ok_or_else(|| format!("manifest has no block `{yaml_name}`"))?;
+        s.push_str(&format!("### `{rust_name}(…)`\n\n"));
+        if let Some(d) = block["description"].as_str() {
+            s.push_str(&format!("{d}\n\n"));
+        }
+        if let Some(fields) = block["fields"].as_array() {
+            for f in fields {
+                s.push_str(&field_line(yaml_name, f, None));
+            }
+        }
+        s.push('\n');
+    }
+    for (item_id, field_name, rust_name) in ALT_FORM_BLOCKS {
+        let item = find_item(item_id).ok_or_else(|| format!("manifest has no item `{item_id}`"))?;
+        let field = item["fields"]
+            .as_array()
+            .and_then(|fs| fs.iter().find(|f| f["name"].as_str() == Some(*field_name)))
+            .ok_or_else(|| format!("`{item_id}` has no field `{field_name}`"))?;
+        let alt = &field["alternativeForm"];
+        s.push_str(&format!(
+            "### `{rust_name}(…)` (on `#[{}]`)\n\n",
+            ATTR_SOURCES
+                .iter()
+                .find(|(_, ids)| ids.contains(item_id))
+                .map(|(a, _)| *a)
+                .unwrap_or(item_id)
+        ));
+        if let Some(d) = alt["description"].as_str() {
+            s.push_str(&format!("{d}\n\n"));
+        }
+        if let Some(fields) = alt["fields"].as_array() {
+            for f in fields {
+                s.push_str(&field_line(field_name, f, None));
+            }
+        }
+        s.push('\n');
+    }
+
+    // Deprecated forms, in manifest order, with the mapping in Rust spelling.
+    let no_deps = Vec::new();
+    let deprecations = man["deprecations"].as_array().unwrap_or(&no_deps);
+    let mut wrote_heading = false;
+    for dep in deprecations {
+        if dep["kind"].as_str() != Some("item") {
+            continue;
+        }
+        let id = dep["id"].as_str().unwrap_or_default();
+        let Some((attr, sources)) = ATTR_SOURCES.iter().find(|(_, s)| s.contains(&id)) else {
+            continue;
+        };
+        if !wrote_heading {
+            s.push_str("## Deprecated forms\n\n");
+            s.push_str(
+                "Each still compiles and still works, with a compile-time deprecation warning \
+                 naming the replacement; `#[allow(deprecated)]` on the type keeps one \
+                 deliberately.\n\n",
+            );
+            wrote_heading = true;
+        }
+        let replaced = dep["replacedBy"].as_str().unwrap_or_default();
+        let replaced_attr = ATTR_SOURCES
+            .iter()
+            .find(|(_, s)| s.contains(&replaced))
+            .map(|(a, _)| *a)
+            .unwrap_or(replaced);
+        let form = if sources.len() == 1 {
+            format!("`#[{attr}(…)]`")
+        } else {
+            // A deprecated shape of a current attribute: name it by its keys.
+            let keys: Vec<String> = SHAPE_DISCRIMINATORS
+                .iter()
+                .find(|(d, _)| *d == id)
+                .map(|(_, keys)| keys.iter().map(|k| format!("`{k}`")).collect())
+                .unwrap_or_default();
+            format!("`#[{attr}]` written with {}", keys.join("/"))
+        };
+        s.push_str(&format!(
+            "- {form} → `#[{replaced_attr}]`. {}",
+            dep["reason"].as_str().unwrap_or_default()
+        ));
+        let mapping: Vec<String> = dep["mapping"]
+            .as_object()
+            .map(|m| {
+                m.iter()
+                    .map(|(k, v)| {
+                        (
+                            camel_to_snake(k),
+                            camel_to_snake(v.as_str().unwrap_or_default()),
+                        )
+                    })
+                    .filter(|(k, v)| k != v)
+                    .map(|(k, v)| format!("`{k}` → `{v}`"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !mapping.is_empty() {
+            s.push_str(&format!(" Mapping: {}.", mapping.join("; ")));
+        }
+        s.push('\n');
+    }
+    if wrote_heading {
+        s.push('\n');
+    }
+
+    Ok(s)
+}
+
+fn item_by_id<'a>(items: &'a [Value], id: &str) -> Option<&'a Value> {
+    items.iter().find(|i| i["id"].as_str() == Some(id))
+}
+
+/// One attribute's entry: what it does, an example in Rust syntax, and a line
+/// per key.
+fn write_item_reference(
+    s: &mut String,
+    attr: &str,
+    source_ids: &[&str],
+    primary: &Value,
+    items: &[Value],
+) -> Result<(), String> {
+    s.push_str(&format!("### `#[{attr}(…)]`\n\n"));
+
+    if let Some(d) = primary["description"].as_str() {
+        s.push_str(d);
+    }
+    let mut traits = Vec::new();
+    if let Some(sections) = primary["sections"].as_array() {
+        if sections.iter().any(|v| v.as_str() == Some("constraints")) {
+            traits.push("a layout constraint".to_string());
+        }
+    }
+    if primary["supportsHold"].as_bool() == Some(true) {
+        traits.push("takes `negated = true`".to_string());
+    }
+    if let Some(d) = primary["deprecated"].as_object() {
+        let replaced = d
+            .get("replacedBy")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let replaced_attr = ATTR_SOURCES
+            .iter()
+            .find(|(_, s)| s.contains(&replaced))
+            .map(|(a, _)| *a)
+            .unwrap_or(replaced);
+        traits.push(format!("**deprecated**, rewrites to `#[{replaced_attr}]`"));
+    }
+    if !traits.is_empty() {
+        s.push_str(&format!(" _({})_", traits.join("; ")));
+    }
+    s.push_str("\n\n");
+
+    if let Some(example) = primary["example"].as_object() {
+        let args: Vec<String> = example
+            .iter()
+            .map(|(k, v)| rust_example_arg(&rust_key(source_ids[0], k), v))
+            .collect();
+        s.push_str(&format!("```text\n#[{attr}({})]\n```\n\n", args.join(", ")));
+    }
+
+    // Keys, primary source first, then the legacy keys a merged source adds.
+    let mut seen: Vec<String> = Vec::new();
+    for (index, id) in source_ids.iter().enumerate() {
+        let item = item_by_id(items, id).ok_or_else(|| format!("manifest has no item `{id}`"))?;
+        let legacy = if index == 0 {
+            None
+        } else {
+            Some(format!(
+                "the deprecated `{id}` form, which rewrites onto the blocks above; mixing the \
+                 two shapes is a compile error"
+            ))
+        };
+        if let Some(fields) = item["fields"].as_array() {
+            for f in fields {
+                let yaml = f["name"].as_str().unwrap_or_default();
+                if is_skipped(id, yaml) {
+                    continue;
+                }
+                let key = rust_key(id, yaml);
+                if seen.contains(&key) {
+                    continue;
+                }
+                seen.push(key);
+                s.push_str(&field_line(id, f, legacy.as_deref()));
+            }
+        }
+        if index == 0 && item["supportsHold"].as_bool() == Some(true) {
+            s.push_str(
+                "- `negated`: `true` asserts the relationship must *not* hold \
+                 (spytial-core's `hold: never`).\n",
+            );
+        }
+    }
+    if let Some(note) = primary["note"].as_str() {
+        s.push_str(&format!("\n> {note}\n"));
+    }
+    s.push('\n');
+    Ok(())
+}
+
+/// One `key = value` (or, for a block, `key(leaf = value, …)`) of a manifest
+/// example, in Rust attribute syntax.
+fn rust_example_arg(key: &str, v: &Value) -> String {
+    match v {
+        Value::Object(map) => {
+            let inner: Vec<String> = map
+                .iter()
+                .map(|(k, v)| rust_example_arg(&camel_to_snake(k), v))
+                .collect();
+            format!("{key}({})", inner.join(", "))
+        }
+        other => format!("{key} = {}", rust_example_value(other)),
+    }
+}
+
+/// A manifest example scalar or list in Rust attribute syntax.
+fn rust_example_value(v: &Value) -> String {
+    match v {
+        Value::String(text) => format!("{text:?}"),
+        Value::Array(items) => {
+            let inner: Vec<String> = items.iter().map(rust_example_value).collect();
+            format!("[{}]", inner.join(", "))
+        }
+        other => other.to_string(),
+    }
+}
+
+/// One `- key: …` line for a field, from the manifest's own description of it.
+fn field_line(item_id: &str, f: &Value, legacy: Option<&str>) -> String {
+    let yaml = f["name"].as_str().unwrap_or_default();
+    let key = rust_key(item_id, yaml);
+    let kind = f["type"].as_str().unwrap_or("string");
+
+    let mut parts: Vec<String> = Vec::new();
+    let vocabulary = |f: &Value| -> Option<String> {
+        f["values"].as_array().map(|vs| {
+            vs.iter()
+                .filter_map(Value::as_str)
+                .map(|v| format!("`{v}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+    };
+    match kind {
+        "block" => {
+            let block = f["block"].as_str().unwrap_or_default();
+            let rust = BLOCK_SOURCES
+                .iter()
+                .find(|(yaml, _)| *yaml == block)
+                .map(|(_, rust)| *rust)
+                .unwrap_or(block);
+            parts.push(format!("`{rust}(…)` block"));
+        }
+        "enum" => {
+            if let Some(v) = vocabulary(f) {
+                parts.push(format!("one of {v}"));
+            }
+            if !f["alternativeForm"].is_null() {
+                let rust = ALT_FORM_BLOCKS
+                    .iter()
+                    .find(|(item, field, _)| *item == item_id && *field == yaml)
+                    .map(|(_, _, rust)| *rust)
+                    .unwrap_or(&key);
+                parts.push(format!(
+                    "or the `{rust}(…)` block, which also styles it (see Style blocks)"
+                ));
+            }
+        }
+        "enum-list" => {
+            if let Some(v) = vocabulary(f) {
+                parts.push(format!("one or more of {v}"));
+            }
+        }
+        "boolean" => parts.push("`true` or `false`".to_string()),
+        "number" => {
+            let mut bound = "number".to_string();
+            if f["exclusiveMinimum"].as_f64() == Some(0.0) {
+                bound.push_str(" greater than 0");
+            } else if let (Some(min), Some(max)) = (f["minimum"].as_f64(), f["maximum"].as_f64()) {
+                bound.push_str(&format!(" between {min} and {max}"));
+            } else if let Some(min) = f["minimum"].as_f64() {
+                bound.push_str(&format!(" of at least {min}"));
+            }
+            parts.push(bound);
+        }
+        "selector" => parts.push("selector".to_string()),
+        "relation" => parts.push("relation (field) name".to_string()),
+        "color" => parts.push("color".to_string()),
+        "icon-path" => parts.push("icon name, icon-pack reference, URL, or path".to_string()),
+        other => parts.push(other.to_string()),
+    }
+    if let Some(d) = f["default"].as_str() {
+        parts.push(format!("default `{d}`"));
+    } else if !f["default"].is_null() {
+        parts.push(format!("default `{}`", f["default"]));
+    }
+    // A merged legacy source's `required` describes its own shape, not the
+    // attribute: `value` is required in the `edgeColor` form, not in
+    // `#[edge_style]`.
+    if f["required"].as_bool() == Some(true) && legacy.is_none() {
+        parts.push("required".to_string());
+    }
+    if let Some(legacy) = legacy {
+        parts.push(legacy.to_string());
+    }
+
+    let mut line = format!("- `{key}`: {}.", parts.join("; "));
+    if let Some(d) = f["description"].as_str() {
+        line.push(' ');
+        line.push_str(d);
+    }
+    if let Some(note) = f["note"].as_str() {
+        line.push(' ');
+        line.push_str(note);
+    }
+    match f["enforcement"].as_str() {
+        Some("parse-error") => {
+            line.push_str(" _(a bad value makes spytial-core reject the whole spec)_")
+        }
+        Some("value-ignored") => line.push_str(" _(spytial-core drops a bad value silently)_"),
+        _ => {}
+    }
+    line.push('\n');
+
+    if let Some(accepts) = f["accepts"].as_array() {
+        for a in accepts {
+            let arity = a["arity"].as_str().unwrap_or_default();
+            let columns = match (a["minColumns"].as_u64(), a["maxColumns"].as_u64()) {
+                (Some(min), Some(max)) if min == max => {
+                    format!("{min} column{}", if min == 1 { "" } else { "s" })
+                }
+                (Some(min), Some(max)) => format!("{min} to {max} columns"),
+                (Some(min), None) => format!("{min} or more columns"),
+                _ => String::new(),
+            };
+            let requires = a["requires"]
+                .as_str()
+                .map(|r| format!("; needs `{}`", camel_to_snake(r)))
+                .unwrap_or_default();
+            line.push_str(&format!(
+                "  - {arity}{}{requires}: {}\n",
+                if columns.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({columns})")
+                },
+                a["meaning"].as_str().unwrap_or_default(),
+            ));
+        }
+    }
+    line
 }

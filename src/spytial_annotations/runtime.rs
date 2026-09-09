@@ -44,18 +44,46 @@ pub struct SpytialDecorators {
 }
 
 impl SpytialDecorators {
+    /// Merge `other` in, skipping rules already present.
+    ///
+    /// Equality ignores `source`: the same rule reached through two types is
+    /// one rule, and spytial-core de-duplicates the same way, keeping the
+    /// first source it saw. Comparing sources would instead emit the rule
+    /// twice, once per site, and the engine would then drop one anyway.
     pub(crate) fn extend_unique(&mut self, other: Self) {
         for constraint in other.constraints {
-            if !self.constraints.contains(&constraint) {
+            let bare = constraint.without_source();
+            if !self.constraints.iter().any(|c| c.without_source() == bare) {
                 self.constraints.push(constraint);
             }
         }
         for directive in other.directives {
-            if !self.directives.contains(&directive) {
+            let bare = directive.without_source();
+            if !self.directives.iter().any(|d| d.without_source() == bare) {
                 self.directives.push(directive);
             }
         }
     }
+}
+
+/// Where a rule was written, as spytial-core's `source` block (5.4).
+///
+/// The derive stamps every rule it emits with the attribute exactly as the
+/// user wrote it and its `file:line`. The viewer's conflict reports and
+/// warnings then cite that text in place of the engine's own description of
+/// the rule, so a report reads `#[orientation(selector = "left", …)] at
+/// src/tree.rs:12` rather than a reconstructed YAML fragment. The manifest
+/// accepts the block on every block-bodied form and displays it for the
+/// layout constraints and `hideAtom`; on the rest it is carried and ignored.
+///
+/// Hand-written YAML needs no `source` — there the YAML is the author's text.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuleSource {
+    /// The rule as its author wrote it in the host surface.
+    pub text: String,
+    /// Where it was written, e.g. `src/tree.rs:12`. Appended to `text` in reports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
 }
 
 /// A layout/structural constraint on the diagram.
@@ -68,7 +96,7 @@ pub enum Constraint {
     Align(AlignConstraint),
     /// Lay out atoms in a clockwise or counter-clockwise cycle.
     Cyclic(CyclicConstraint),
-    /// Cluster atoms into named groups, either by selector or by field.
+    /// Cluster atoms into named groups chosen by a selector.
     Group(GroupConstraint),
     /// Set explicit atom dimensions.
     Size(SizeConstraint),
@@ -96,6 +124,83 @@ pub enum Directive {
     Flag(FlagDirective),
 }
 
+impl Constraint {
+    /// The rule's `source` slot. Every constraint form has one.
+    pub fn source_mut(&mut self) -> &mut Option<RuleSource> {
+        match self {
+            Constraint::Orientation(c) => &mut c.orientation.source,
+            Constraint::Align(c) => &mut c.align.source,
+            Constraint::Cyclic(c) => &mut c.cyclic.source,
+            Constraint::Group(c) => match &mut c.group {
+                GroupParams::SelectorBased { source, .. } => source,
+            },
+            Constraint::Size(c) => &mut c.size.source,
+            Constraint::HideAtom(c) => &mut c.hide_atom.source,
+        }
+    }
+
+    /// Where the rule was written, if it was stamped.
+    pub fn source(&self) -> Option<&RuleSource> {
+        match self {
+            Constraint::Orientation(c) => c.orientation.source.as_ref(),
+            Constraint::Align(c) => c.align.source.as_ref(),
+            Constraint::Cyclic(c) => c.cyclic.source.as_ref(),
+            Constraint::Group(c) => match &c.group {
+                GroupParams::SelectorBased { source, .. } => source.as_ref(),
+            },
+            Constraint::Size(c) => c.size.source.as_ref(),
+            Constraint::HideAtom(c) => c.hide_atom.source.as_ref(),
+        }
+    }
+
+    /// This rule with its `source` cleared, for comparisons that should not
+    /// care where a rule was written.
+    pub fn without_source(&self) -> Self {
+        let mut bare = self.clone();
+        *bare.source_mut() = None;
+        bare
+    }
+}
+
+impl Directive {
+    /// The rule's `source` slot, or `None` for `flag`: it is written as a
+    /// bare scalar (`- flag: hideDisconnected`) and has no block to carry one.
+    pub fn source_mut(&mut self) -> Option<&mut Option<RuleSource>> {
+        match self {
+            Directive::AtomStyle(d) => Some(&mut d.atom_style.source),
+            Directive::EdgeStyle(d) => Some(&mut d.edge_style.source),
+            Directive::Attribute(d) => Some(&mut d.attribute.source),
+            Directive::HideField(d) => Some(&mut d.hide_field.source),
+            Directive::InferredEdge(d) => Some(&mut d.inferred_edge.source),
+            Directive::Tag(d) => Some(&mut d.tag.source),
+            Directive::Flag(_) => None,
+        }
+    }
+
+    /// Where the rule was written, if it was stamped.
+    pub fn source(&self) -> Option<&RuleSource> {
+        match self {
+            Directive::AtomStyle(d) => d.atom_style.source.as_ref(),
+            Directive::EdgeStyle(d) => d.edge_style.source.as_ref(),
+            Directive::Attribute(d) => d.attribute.source.as_ref(),
+            Directive::HideField(d) => d.hide_field.source.as_ref(),
+            Directive::InferredEdge(d) => d.inferred_edge.source.as_ref(),
+            Directive::Tag(d) => d.tag.source.as_ref(),
+            Directive::Flag(_) => None,
+        }
+    }
+
+    /// This rule with its `source` cleared, for comparisons that should not
+    /// care where a rule was written.
+    pub fn without_source(&self) -> Self {
+        let mut bare = self.clone();
+        if let Some(slot) = bare.source_mut() {
+            *slot = None;
+        }
+        bare
+    }
+}
+
 // Constraint implementations
 
 /// Wire-format wrapper for an `orientation:` constraint.
@@ -121,6 +226,9 @@ pub struct OrientationParams {
         deserialize_with = "hold_serde::deserialize"
     )]
     pub negated: bool,
+    /// Where this rule came from, for the viewer's conflict reports (spytial-core 5.4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<RuleSource>,
 }
 
 /// Wire-format wrapper for an `align:` constraint.
@@ -146,6 +254,9 @@ pub struct AlignParams {
         deserialize_with = "hold_serde::deserialize"
     )]
     pub negated: bool,
+    /// Where this rule came from, for the viewer's conflict reports (spytial-core 5.4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<RuleSource>,
 }
 
 /// Wire-format wrapper for a `cyclic:` constraint.
@@ -171,47 +282,32 @@ pub struct CyclicParams {
         deserialize_with = "hold_serde::deserialize"
     )]
     pub negated: bool,
+    /// Where this rule came from, for the viewer's conflict reports (spytial-core 5.4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<RuleSource>,
 }
 
 /// Wire-format wrapper for a `group:` constraint.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GroupConstraint {
-    /// Inner group parameters (one of two shapes — see [`GroupParams`]).
+    /// Inner group parameters — see [`GroupParams`].
     pub group: GroupParams,
 }
 
 /// Parameters of a [`GroupConstraint`].
 ///
-/// Group constraints come in two flavours: cluster atoms by an explicit
-/// selector ([`GroupParams::SelectorBased`]) or by following a relation field
-/// ([`GroupParams::FieldBased`]).
+/// Kept as an enum so a second shape can be added without a breaking change;
+/// [`GroupParams::SelectorBased`] is the only one the language has today.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum GroupParams {
-    /// Group atoms by following a relation field and indices.
-    FieldBased {
-        /// Name of the relation/field to group on.
-        field: String,
-        /// Tuple index used to identify the group key.
-        #[serde(rename = "groupOn")]
-        group_on: u32,
-        /// Tuple index whose atom is added to the group.
-        #[serde(rename = "addToGroup")]
-        add_to_group: u32,
-        /// Optional selector restricting which tuples participate.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        selector: Option<String>,
-        /// When `true`, serialized as `hold: never`.
-        #[serde(
-            rename = "hold",
-            default,
-            skip_serializing_if = "is_not_negated",
-            serialize_with = "hold_serde::serialize",
-            deserialize_with = "hold_serde::deserialize"
-        )]
-        negated: bool,
-    },
-    /// Group atoms matched by a selector under a single named cluster.
+    /// Group atoms matched by a selector. A binary selector builds one group
+    /// per distinct first-column atom (the key); a unary one builds a single
+    /// unkeyed group.
+    ///
+    /// This is the only shape. The field-based one (`field`/`groupOn`/
+    /// `addToGroup`) was removed from the layout-spec language in spytial-core
+    /// 5.1.0 and no longer parses there, so it is not representable here.
     SelectorBased {
         /// Selector identifying the atoms to cluster.
         selector: String,
@@ -235,6 +331,9 @@ pub enum GroupParams {
             deserialize_with = "hold_serde::deserialize"
         )]
         negated: bool,
+        /// Where this rule came from, for the viewer's conflict reports (spytial-core 5.4).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<RuleSource>,
     },
 }
 
@@ -453,6 +552,9 @@ pub struct AtomStyleParams {
     /// old `showLabels`.
     #[serde(rename = "showLabel", skip_serializing_if = "Option::is_none")]
     pub show_label: Option<bool>,
+    /// Where this rule came from, for the viewer's conflict reports (spytial-core 5.4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<RuleSource>,
 }
 
 /// Wire-format wrapper for a `size:` constraint.
@@ -471,6 +573,9 @@ pub struct SizeParams {
     pub height: u32,
     /// Width in diagram units.
     pub width: u32,
+    /// Where this rule came from, for the viewer's conflict reports (spytial-core 5.4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<RuleSource>,
 }
 
 /// `EdgeStyleDirective` is the canonical edge-styling directive (spytial-core
@@ -511,6 +616,9 @@ pub struct EdgeStyleParams {
     /// Whether the edge is hidden entirely.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hidden: Option<bool>,
+    /// Where this rule came from, for the viewer's conflict reports (spytial-core 5.4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<RuleSource>,
 }
 
 /// Wire-format wrapper for an `attribute:` directive.
@@ -534,6 +642,9 @@ pub struct AttributeParams {
     /// Styling for this attribute's line on the node (spytial-core 3.1).
     #[serde(rename = "textStyle", skip_serializing_if = "Option::is_none")]
     pub text_style: Option<TextStyle>,
+    /// Where this rule came from, for the viewer's conflict reports (spytial-core 5.4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<RuleSource>,
 }
 
 /// Wire-format wrapper for a `hideField:` directive.
@@ -555,6 +666,9 @@ pub struct HideFieldParams {
     /// Optional value filter restricting which tuples are hidden.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filter: Option<String>,
+    /// Where this rule came from, for the viewer's conflict reports (spytial-core 5.4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<RuleSource>,
 }
 
 /// Wire-format wrapper for a `hideAtom:` constraint.
@@ -570,6 +684,9 @@ pub struct HideAtomConstraint {
 pub struct HideAtomParams {
     /// Selector identifying the atoms to hide.
     pub selector: String,
+    /// Where this rule came from, for the viewer's conflict reports (spytial-core 5.4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<RuleSource>,
 }
 
 /// One end of an `inferredEdge`'s `draw` line: what that end of the edge
@@ -688,6 +805,9 @@ pub struct InferredEdgeParams {
     /// Styling for the synthesized edge's label.
     #[serde(rename = "textStyle", skip_serializing_if = "Option::is_none")]
     pub text_style: Option<TextStyle>,
+    /// Where this rule came from, for the viewer's conflict reports (spytial-core 5.4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<RuleSource>,
 }
 
 /// `TagDirective` adds computed attributes to nodes based on n-ary selector
@@ -720,6 +840,9 @@ pub struct TagParams {
     /// Styling for this tag's line on the node (spytial-core 3.1).
     #[serde(rename = "textStyle", skip_serializing_if = "Option::is_none")]
     pub text_style: Option<TextStyle>,
+    /// Where this rule came from, for the viewer's conflict reports (spytial-core 5.4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<RuleSource>,
 }
 
 /// A boolean diagram flag (e.g. `hideDisconnected`, `hideEmptyRelations`).
@@ -960,6 +1083,14 @@ pub fn to_yaml(decorators: &SpytialDecorators) -> Result<String, serde_yaml_ng::
 pub struct SpytialDecoratorsBuilder {
     constraints: Vec<Constraint>,
     directives: Vec<Directive>,
+    /// Which list took the most recent rule, so [`Self::source`] can find it.
+    last: Option<LastPushed>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LastPushed {
+    Constraint,
+    Directive,
 }
 
 impl Default for SpytialDecoratorsBuilder {
@@ -974,26 +1105,70 @@ impl SpytialDecoratorsBuilder {
         Self {
             constraints: Vec::new(),
             directives: Vec::new(),
+            last: None,
         }
+    }
+
+    fn push_constraint(&mut self, constraint: Constraint) {
+        self.constraints.push(constraint);
+        self.last = Some(LastPushed::Constraint);
+    }
+
+    fn push_directive(&mut self, directive: Directive) {
+        self.directives.push(directive);
+        self.last = Some(LastPushed::Directive);
+    }
+
+    /// Stamp the most recently pushed rule with where it was written
+    /// (spytial-core 5.4's `source` block).
+    ///
+    /// The derive calls this after every rule it emits, passing the attribute
+    /// as the user wrote it and its `file:line`, so the viewer's conflict
+    /// reports cite the Rust attribute rather than a reconstructed YAML
+    /// fragment. Does nothing when no rule has been pushed yet, when the last
+    /// one was a `flag` (a bare scalar with nowhere to carry a `source`), or
+    /// directly after [`Self::extend_with`], whose rules keep the sources they
+    /// arrived with. Hand-assembled builders can skip it: a rule without a
+    /// `source` is reported by spytial-core's own description of it.
+    pub fn source(mut self, text: &str, location: Option<&str>) -> Self {
+        let source = RuleSource {
+            text: text.to_string(),
+            location: location.map(str::to_string),
+        };
+        match self.last {
+            Some(LastPushed::Constraint) => {
+                if let Some(constraint) = self.constraints.last_mut() {
+                    *constraint.source_mut() = Some(source);
+                }
+            }
+            Some(LastPushed::Directive) => {
+                if let Some(Some(slot)) = self.directives.last_mut().map(Directive::source_mut) {
+                    *slot = Some(source);
+                }
+            }
+            None => {}
+        }
+        self
     }
 
     /// Push an [`OrientationConstraint`] onto the builder.
     pub fn orientation(mut self, selector: &str, directions: Vec<&str>, negated: bool) -> Self {
-        self.constraints
-            .push(Constraint::Orientation(OrientationConstraint {
-                orientation: OrientationParams {
-                    selector: selector.to_string(),
-                    directions: directions.iter().map(|s| s.to_string()).collect(),
-                    negated,
-                },
-            }));
+        self.push_constraint(Constraint::Orientation(OrientationConstraint {
+            orientation: OrientationParams {
+                source: None,
+                selector: selector.to_string(),
+                directions: directions.iter().map(|s| s.to_string()).collect(),
+                negated,
+            },
+        }));
         self
     }
 
     /// Push an [`AlignConstraint`] onto the builder.
     pub fn align(mut self, selector: &str, direction: &str, negated: bool) -> Self {
-        self.constraints.push(Constraint::Align(AlignConstraint {
+        self.push_constraint(Constraint::Align(AlignConstraint {
             align: AlignParams {
+                source: None,
                 selector: selector.to_string(),
                 direction: direction.to_string(),
                 negated,
@@ -1004,32 +1179,11 @@ impl SpytialDecoratorsBuilder {
 
     /// Push a [`CyclicConstraint`] onto the builder.
     pub fn cyclic(mut self, selector: &str, direction: &str, negated: bool) -> Self {
-        self.constraints.push(Constraint::Cyclic(CyclicConstraint {
+        self.push_constraint(Constraint::Cyclic(CyclicConstraint {
             cyclic: CyclicParams {
+                source: None,
                 selector: selector.to_string(),
                 direction: direction.to_string(),
-                negated,
-            },
-        }));
-        self
-    }
-
-    /// Push a field-based [`GroupConstraint`] (groups by following a relation
-    /// field) onto the builder.
-    pub fn group_field_based(
-        mut self,
-        field: &str,
-        group_on: u32,
-        add_to_group: u32,
-        selector: Option<&str>,
-        negated: bool,
-    ) -> Self {
-        self.constraints.push(Constraint::Group(GroupConstraint {
-            group: GroupParams::FieldBased {
-                field: field.to_string(),
-                group_on,
-                add_to_group,
-                selector: selector.map(|s| s.to_string()),
                 negated,
             },
         }));
@@ -1052,8 +1206,9 @@ impl SpytialDecoratorsBuilder {
         text_style: Option<TextStyle>,
         negated: bool,
     ) -> Self {
-        self.constraints.push(Constraint::Group(GroupConstraint {
+        self.push_constraint(Constraint::Group(GroupConstraint {
             group: GroupParams::SelectorBased {
+                source: None,
                 selector: selector.to_string(),
                 name: name.to_string(),
                 add_edge,
@@ -1075,17 +1230,17 @@ impl SpytialDecoratorsBuilder {
         text_style: Option<TextStyle>,
         show_label: Option<bool>,
     ) -> Self {
-        self.directives
-            .push(Directive::AtomStyle(AtomStyleDirective {
-                atom_style: AtomStyleParams {
-                    selector: selector.map(|s| s.to_string()),
-                    fill_style,
-                    border_style,
-                    icon_style,
-                    text_style,
-                    show_label,
-                },
-            }));
+        self.push_directive(Directive::AtomStyle(AtomStyleDirective {
+            atom_style: AtomStyleParams {
+                source: None,
+                selector: selector.map(|s| s.to_string()),
+                fill_style,
+                border_style,
+                icon_style,
+                text_style,
+                show_label,
+            },
+        }));
         self
     }
 
@@ -1110,8 +1265,9 @@ impl SpytialDecoratorsBuilder {
 
     /// Push a [`SizeConstraint`] onto the builder.
     pub fn size(mut self, selector: &str, height: u32, width: u32) -> Self {
-        self.constraints.push(Constraint::Size(SizeConstraint {
+        self.push_constraint(Constraint::Size(SizeConstraint {
             size: SizeParams {
+                source: None,
                 selector: selector.to_string(),
                 height,
                 width,
@@ -1160,18 +1316,18 @@ impl SpytialDecoratorsBuilder {
         show_label: Option<bool>,
         hidden: Option<bool>,
     ) -> Self {
-        self.directives
-            .push(Directive::EdgeStyle(EdgeStyleDirective {
-                edge_style: EdgeStyleParams {
-                    field: field.to_string(),
-                    selector: selector.map(|s| s.to_string()),
-                    filter: filter.map(|s| s.to_string()),
-                    line_style,
-                    text_style,
-                    show_label,
-                    hidden,
-                },
-            }));
+        self.push_directive(Directive::EdgeStyle(EdgeStyleDirective {
+            edge_style: EdgeStyleParams {
+                source: None,
+                field: field.to_string(),
+                selector: selector.map(|s| s.to_string()),
+                filter: filter.map(|s| s.to_string()),
+                line_style,
+                text_style,
+                show_label,
+                hidden,
+            },
+        }));
         self
     }
 
@@ -1231,39 +1387,39 @@ impl SpytialDecoratorsBuilder {
         filter: Option<&str>,
         text_style: Option<TextStyle>,
     ) -> Self {
-        self.directives
-            .push(Directive::Attribute(AttributeDirective {
-                attribute: AttributeParams {
-                    field: field.to_string(),
-                    selector: selector.map(|s| s.to_string()),
-                    filter: filter.map(|s| s.to_string()),
-                    text_style,
-                },
-            }));
+        self.push_directive(Directive::Attribute(AttributeDirective {
+            attribute: AttributeParams {
+                source: None,
+                field: field.to_string(),
+                selector: selector.map(|s| s.to_string()),
+                filter: filter.map(|s| s.to_string()),
+                text_style,
+            },
+        }));
         self
     }
 
     /// Push a [`HideFieldDirective`] onto the builder.
     pub fn hide_field(mut self, field: &str, selector: Option<&str>, filter: Option<&str>) -> Self {
-        self.directives
-            .push(Directive::HideField(HideFieldDirective {
-                hide_field: HideFieldParams {
-                    field: field.to_string(),
-                    selector: selector.map(|s| s.to_string()),
-                    filter: filter.map(|s| s.to_string()),
-                },
-            }));
+        self.push_directive(Directive::HideField(HideFieldDirective {
+            hide_field: HideFieldParams {
+                source: None,
+                field: field.to_string(),
+                selector: selector.map(|s| s.to_string()),
+                filter: filter.map(|s| s.to_string()),
+            },
+        }));
         self
     }
 
     /// Push a [`HideAtomConstraint`] onto the builder.
     pub fn hide_atom(mut self, selector: &str) -> Self {
-        self.constraints
-            .push(Constraint::HideAtom(HideAtomConstraint {
-                hide_atom: HideAtomParams {
-                    selector: selector.to_string(),
-                },
-            }));
+        self.push_constraint(Constraint::HideAtom(HideAtomConstraint {
+            hide_atom: HideAtomParams {
+                source: None,
+                selector: selector.to_string(),
+            },
+        }));
         self
     }
 
@@ -1294,22 +1450,22 @@ impl SpytialDecoratorsBuilder {
         line_style: Option<LineStyle>,
         text_style: Option<TextStyle>,
     ) -> Self {
-        self.directives
-            .push(Directive::InferredEdge(InferredEdgeDirective {
-                inferred_edge: InferredEdgeParams {
-                    name: name.to_string(),
-                    selector: selector.to_string(),
-                    draw,
-                    line_style,
-                    text_style,
-                },
-            }));
+        self.push_directive(Directive::InferredEdge(InferredEdgeDirective {
+            inferred_edge: InferredEdgeParams {
+                source: None,
+                name: name.to_string(),
+                selector: selector.to_string(),
+                draw,
+                line_style,
+                text_style,
+            },
+        }));
         self
     }
 
     /// Push a [`FlagDirective`] onto the builder.
     pub fn flag(mut self, name: &str) -> Self {
-        self.directives.push(Directive::Flag(FlagDirective {
+        self.push_directive(Directive::Flag(FlagDirective {
             flag: name.to_string(),
         }));
         self
@@ -1329,8 +1485,9 @@ impl SpytialDecoratorsBuilder {
         value: &str,
         text_style: Option<TextStyle>,
     ) -> Self {
-        self.directives.push(Directive::Tag(TagDirective {
+        self.push_directive(Directive::Tag(TagDirective {
             tag: TagParams {
+                source: None,
                 to_tag: to_tag.to_string(),
                 name: name.to_string(),
                 value: value.to_string(),
@@ -1341,11 +1498,8 @@ impl SpytialDecoratorsBuilder {
     }
 
     /// Include decorators from another type that implements `HasSpytialDecorators`.
-    pub fn include_decorators_from_type<T: HasSpytialDecorators>(mut self) -> Self {
-        let other_decorators = T::decorators();
-        self.constraints.extend(other_decorators.constraints);
-        self.directives.extend(other_decorators.directives);
-        self
+    pub fn include_decorators_from_type<T: HasSpytialDecorators>(self) -> Self {
+        self.extend_with(T::decorators())
     }
 
     /// Merge another set of decorators into this builder.
@@ -1356,6 +1510,9 @@ impl SpytialDecoratorsBuilder {
     pub fn extend_with(mut self, other: SpytialDecorators) -> Self {
         self.constraints.extend(other.constraints);
         self.directives.extend(other.directives);
+        // The merged rules keep the sources they arrived with; a `.source()`
+        // written after this must not re-stamp the last of them.
+        self.last = None;
         self
     }
 
@@ -1385,6 +1542,7 @@ mod tests {
             constraints: vec![
                 Constraint::Orientation(OrientationConstraint {
                     orientation: OrientationParams {
+                        source: None,
                         selector: "value".to_string(),
                         directions: vec!["above".to_string()],
                         negated: false,
@@ -1392,6 +1550,7 @@ mod tests {
                 }),
                 Constraint::Align(AlignConstraint {
                     align: AlignParams {
+                        source: None,
                         selector: "siblings".to_string(),
                         direction: "horizontal".to_string(),
                         negated: false,

@@ -15,4 +15,7 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [dependencies]
-serde_json = "1.0"
+# `preserve_order`: the reference renders each item's `example` as a Rust
+# attribute, and the manifest lists its keys in the order a reader expects
+# (`selector` before `directions`); the default map would alphabetize them.
+serde_json = { version = "1.0", features = ["preserve_order"] }

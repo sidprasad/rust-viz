@@ -58,14 +58,14 @@ fn join_position_types(header: &mut Vec<String>, incoming: &[String]) {
 /// Turn the serializer's relation map into the wire-format list.
 ///
 /// Tuples are ordered longest-arity-first (stably, so serialization order is
-/// kept within an arity, and uniform-arity relations are untouched). This is
-/// for spytial-core's benefit: `DataInstanceNormalizer.inferRelationSignatures`
-/// runs unconditionally on `JSONDataInstance` construction and keeps a
-/// relation's header only when its length equals the *first* tuple's arity,
-/// re-inferring it at that arity otherwise. The joined header has the longest
-/// arity that occurs, so a longest tuple must come first for the header to
-/// survive — and for the consumed signature to stay independent of
-/// serialization order in the mixed-arity collision case.
+/// kept within an arity, and uniform-arity relations are untouched). The
+/// ordering dates from spytial-core 4.x, whose normalizer kept a relation's
+/// header only when its length matched the *first* tuple's arity. Since 5.2.1
+/// the normalizer accepts a mixed-arity relation directly and replaces its
+/// header with an empty one whatever the tuple order, so the ordering no
+/// longer decides the consumed signature; it stays because it is deterministic
+/// and free. Per-tuple `ITuple.types` are exact either way, and a
+/// uniform-arity relation's joined header is consumed as written.
 fn finalize_relations(relations: HashMap<String, IRelation>) -> Vec<IRelation> {
     let mut relations: Vec<IRelation> = relations.into_values().collect();
     for rel in &mut relations {

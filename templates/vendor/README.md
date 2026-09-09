@@ -8,12 +8,13 @@ works offline and without network access.
 To update, run the script — don't copy files by hand:
 
 ```bash
-scripts/update-spytial-core.sh 4.4.2
+scripts/update-spytial-core.sh 5.4.1
 ```
 
 It pulls the published tarball (a local `npm run build:all` produces the same bytes,
 but the tarball is what consumers actually get), copies the files below, rewrites
-`VERSION.txt`, and regenerates `macros/src/spec_tables.rs` from the new manifest.
+`VERSION.txt`, and regenerates `macros/src/spec_tables.rs` and
+`macros/src/attributes.md` from the new manifest.
 
 That last step is why the script exists rather than a checklist: the derive macro's
 accepted keys and compile-time validation are *derived* from `spytial-language.json`,
@@ -28,6 +29,7 @@ the two in step to begin with.
 | `react-component-integration.global.js` | `dist/components/react-component-integration.global.js` |
 | `react-component-integration.css` | `dist/components/react-component-integration.css` |
 | `spytial-language.json` | `docs/spytial-language.json` |
+| `spytial-spec.schema.json` | `docs/spytial-spec.schema.json` |
 | `spytial-check.js` | `dist/cli/spytial-check.js` |
 
 `.map` files are intentionally not vendored to keep the published crate small.
@@ -41,10 +43,24 @@ the engine actually rejects versus silently ignores (`enforcement`).
 
 `spec-codegen/` reads it to generate `macros/src/spec_tables.rs`, so the derive
 macro's accepted keys and compile-time validation are derived from spytial-core's
-own description of the language rather than transcribed by hand. Bumping the vendored
-version and forgetting to regenerate is caught by a test in that crate.
+own description of the language rather than transcribed by hand, and
+`macros/src/attributes.md`, the attribute reference the derive's rustdoc includes
+and the guide embeds. Bumping the vendored version and forgetting to regenerate is
+caught by a test in that crate.
 
 First shipped in spytial-core 4.3.0; there is no equivalent file in 4.1.0 or earlier.
+
+## `spytial-spec.schema.json`
+
+The JSON Schema for a layout spec, as spytial-core publishes it beside the manifest
+(the release notes attach both). Like the manifest it is never served to a browser
+and not read by the build: `tests/schema.rs` validates the YAML the derive emits
+against it, which is the one check the engine cannot do itself — spytial-core's
+parser ignores unknown keys silently, so a rule emitted under the wrong name or in
+the wrong place renders a diagram quietly missing it. Small enough (under 30 KB) to
+ship in the published crate, so the test runs from a `.crate` too.
+
+First shipped beside the manifest in spytial-core 4.3.0.
 
 ## `spytial-check.js`
 
@@ -58,8 +74,8 @@ as everything else in this directory. A harness from one release checking specs
 written against another is the failure it exists to prevent — `RunResult` carries a
 `formatVersion` for the same reason, and the test asserts on it.
 
-It is the one file here excluded from the published crate (see `Cargo.toml`): 3.2 MB
-that would near-double the `.crate` for code no consumer runs. `tests/conformance.rs`
+It is the one file here excluded from the published crate (see `Cargo.toml`): about
+0.9 MB of code no consumer runs (it was 3.2 MB before spytial-core 5.2 trimmed it). `tests/conformance.rs`
 skips when it is missing, so a `cargo test` from the published crate stays green.
 
 The bundle is self-contained — a single file any Node ≥16 can run, with no

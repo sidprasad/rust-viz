@@ -1,5 +1,5 @@
 use proc_macro::TokenStream;
-use quote::{quote, quote_spanned};
+use quote::{quote, quote_spanned, ToTokens};
 use syn::{
     parse_macro_input, punctuated::Punctuated, spanned::Spanned, Attribute, Data, DeriveInput,
     Expr, Fields, GenericArgument, Lit, Meta, PathArguments, Token, Type,
@@ -156,7 +156,13 @@ fn generate_probe_call(type_name: &str) -> proc_macro2::TokenStream {
 /// spytial-core's own language manifest — see `spec_tables.rs` and
 /// `spec-codegen/`. A key or value this crate rejects is one spytial-core would
 /// reject or silently ignore, so a typo fails here rather than rendering a
-/// diagram quietly missing what you asked for.
+/// diagram quietly missing what you asked for. The reference below is
+/// generated from the same manifest (`macros/src/attributes.md`).
+///
+/// Every rule the derive emits is stamped with a `source` block: the attribute
+/// as you wrote it and its `file:line`. spytial-core's conflict reports and
+/// warnings cite that text, so a report names your `#[orientation(...)]` at
+/// its line rather than a reconstructed YAML fragment.
 ///
 /// Styling uses the spytial-core 3.x nested blocks, written as groups that
 /// mirror the YAML 1:1: `line_style(color = ..., pattern = ..., weight = ...,
@@ -164,22 +170,7 @@ fn generate_probe_call(type_name: &str) -> proc_macro2::TokenStream {
 /// `border_style(color = ..., width = ...)`, `fill_style(color = ...)`,
 /// `icon_style(path = ..., placement = ..., opacity = ...)`.
 ///
-/// - `#[attribute(field = "field_name", selector = "sel", filter = "...", text_style(size = "small"))]` - Adds attribute directive (all but `field` optional)
-/// - `#[flag(name = "hideDisconnected")]` - Adds flag directive. `name` is required and must be `hideDisconnected` or `hideDisconnectedBuiltIns`
-/// - `#[orientation(selector = "sel", directions = ["above"], negated = true)]` - Adds orientation constraint. `directions` is required; `above`/`below` and `left`/`right` are mutually exclusive, and a `directly*` variant admits only its own plain counterpart alongside it
-/// - `#[align(selector = "sel", direction = "horizontal", negated = true)]` - Adds align constraint (`direction` is `horizontal` or `vertical`; `negated` optional)
-/// - `#[cyclic(selector = "sel", direction = "clockwise", negated = true)]` - Adds cyclic constraint (`direction` is `clockwise` or `counterclockwise`, default `clockwise`; `negated` optional)
-/// - `#[group(selector = "sel", name = "group_name", add_edge(points = "togroup", line_style(pattern = "dashed")), text_style(color = "navy"), negated = true)]` - Adds selector-based group constraint (`add_edge` — bare `add_edge = "togroup"` or the styled block, `text_style` for the group's own label, and `negated` all optional)
-/// - `#[group(field = "field", group_on = 1, add_to_group = 2, negated = true)]` - Adds field-based group constraint (`negated` optional)
-/// - `#[atom_style(selector = "sel", border_style(color = "steelblue", width = 2.0), fill_style(color = "#eef6ff"), icon_style(path = "person", placement = "badge", opacity = 0.4), text_style(size = "large"), show_label = false)]` - Adds atom style directive (all parts optional)
-/// - `#[atom_color(selector = "sel", value = "red")]` - Legacy form; rewrites to `atom_style` with `value` as the *border* colour
-/// - `#[size(selector = "sel", height = 20, width = 30)]` - Adds size directive (both dimensions must be greater than 0)
-/// - `#[icon(selector = "sel", path = "icon.png", show_labels = true)]` - Legacy form; rewrites to `atom_style`, splitting the one `show_labels` boolean into `icon_style(placement = ...)` and `show_label`
-/// - `#[edge_style(field = "field", line_style(color = "blue", pattern = "dashed", weight = 2.0), text_style(size = "small"), show_label = true, hidden = false, filter = "...", selector = "...")]` - Adds edge style directive. The legacy flat keys (`value = "blue", style = "dashed", weight = 2.0`) still parse and rewrite onto the blocks (`value` -> line colour); mixing the two shapes is a compile error. An attribute with no styling at all (e.g. `#[edge_style(field = "left")]`) keeps the 0.1 default of a blue line — write a block to opt out of the default
-/// - `#[hide_field(field = "field", selector = "sel", filter = "...")]` - Adds hide field directive (all but `field` optional)
-/// - `#[hide_atom(selector = "sel")]` - Adds hide atom directive
-/// - `#[inferred_edge(name = "edge", selector = "sel", draw = "_ -> regions", line_style(color = "gray", pattern = "dotted"))]` - Adds inferred edge directive (`draw`/`line_style`/`text_style` optional). `draw = "<end> -> <end>"` reinterprets where each end attaches: `_` is the tuple's own atom, a group-constraint name is that group's hull
-/// - `#[tag(to_tag = "sel", name = "attr", value = "n-ary selector", text_style(size = "small"))]` - Adds tag directive (`text_style` optional)
+#[doc = include_str!("attributes.md")]
 ///
 /// # Example
 /// ```rust
@@ -258,6 +249,7 @@ pub fn derive_spytial_decorators(input: TokenStream) -> TokenStream {
                 }
             }
         }
+        let is_rule = parsed.is_some();
         match parsed {
             Some(SpatialAttribute::Attribute {
                 field,
@@ -315,16 +307,6 @@ pub fn derive_spytial_decorators(input: TokenStream) -> TokenStream {
                 let ts = quote_text_style(&text_style);
                 decorator_calls.push(quote! {
                     .group_selector_based_styled(#selector, #name, #ae, #ts, #negated)
-                });
-            }
-            Some(SpatialAttribute::GroupField {
-                field,
-                group_on,
-                add_to_group,
-                negated,
-            }) => {
-                decorator_calls.push(quote! {
-                    .group_field_based(#field, #group_on, #add_to_group, None, #negated)
                 });
             }
             Some(SpatialAttribute::AtomColor { selector, value }) => {
@@ -490,6 +472,20 @@ pub fn derive_spytial_decorators(input: TokenStream) -> TokenStream {
             }
             None => {}
         }
+        if is_rule {
+            // spytial-core 5.4's `source` block: the rule as written and where.
+            // `file!()`/`line!()` resolve at the span they are given, so
+            // spanning them to the attribute reports the attribute's own line
+            // rather than the derive's.
+            let text = render_attribute(attr);
+            let span = attr.span();
+            let location = quote_spanned! {span=>
+                ::std::concat!(::std::file!(), ":", ::std::line!())
+            };
+            decorator_calls.push(quote! {
+                .source(#text, ::std::option::Option::Some(#location))
+            });
+        }
     }
 
     let own_decorator_calls = decorator_calls.clone();
@@ -586,6 +582,77 @@ pub fn derive_spytial_decorators(input: TokenStream) -> TokenStream {
     TokenStream::from(expanded)
 }
 
+/// The attribute as the user wrote it, for spytial-core's `source` block.
+///
+/// Rendered from the parsed tokens rather than read back from the file:
+/// `Span::source_text` covers one token and joining spans is unstable, so the
+/// exact bytes are out of reach on the crate's minimum Rust. Token-by-token
+/// rendering with conventional spacing gives
+/// `#[orientation(selector = "…", directions = ["left", "below"])]`; literals,
+/// raw strings and escapes included, come through verbatim, which is the part
+/// a reader needs to recognise their own rule in a conflict report.
+fn render_attribute(attr: &Attribute) -> String {
+    let path = attr
+        .path()
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect::<Vec<_>>()
+        .join("::");
+    match &attr.meta {
+        Meta::List(list) => format!("#[{path}({})]", render_tokens(list.tokens.clone())),
+        Meta::NameValue(pair) => {
+            format!(
+                "#[{path} = {}]",
+                render_tokens(pair.value.to_token_stream())
+            )
+        }
+        Meta::Path(_) => format!("#[{path}]"),
+    }
+}
+
+fn render_tokens(tokens: proc_macro2::TokenStream) -> String {
+    use proc_macro2::{Delimiter, Spacing, TokenTree};
+
+    let mut out = String::new();
+    let mut prev: Option<TokenTree> = None;
+    for tree in tokens {
+        let space_before = match (&prev, &tree) {
+            (None, _) => false,
+            // `a, b` not `a , b`
+            (_, TokenTree::Punct(p)) if p.as_char() == ',' => false,
+            // `line_style(` not `line_style (`
+            (Some(TokenTree::Ident(_)), TokenTree::Group(g))
+                if g.delimiter() == Delimiter::Parenthesis =>
+            {
+                false
+            }
+            // multi-char operators stay together
+            (Some(TokenTree::Punct(p)), _) if p.spacing() == Spacing::Joint => false,
+            _ => true,
+        };
+        if space_before {
+            out.push(' ');
+        }
+        match &tree {
+            TokenTree::Group(group) => {
+                let (open, close) = match group.delimiter() {
+                    Delimiter::Parenthesis => ("(", ")"),
+                    Delimiter::Bracket => ("[", "]"),
+                    Delimiter::Brace => ("{", "}"),
+                    Delimiter::None => ("", ""),
+                };
+                out.push_str(open);
+                out.push_str(&render_tokens(group.stream()));
+                out.push_str(close);
+            }
+            other => out.push_str(&other.to_string()),
+        }
+        prev = Some(tree);
+    }
+    out
+}
+
 #[derive(Debug)]
 enum SpatialAttribute {
     Attribute {
@@ -617,12 +684,6 @@ enum SpatialAttribute {
         name: String,
         add_edge: Option<AddEdgeTok>,
         text_style: Option<TextStyleTok>,
-        negated: bool,
-    },
-    GroupField {
-        field: String,
-        group_on: u32,
-        add_to_group: u32,
         negated: bool,
     },
     AtomColor {
@@ -734,9 +795,12 @@ fn parse_spatial_attribute(attr: &Attribute) -> Result<Option<SpatialAttribute>,
 /// that selected it.
 ///
 /// A shape-scoped entry only fires when one of its keys is actually present.
-/// That is the whole point: `#[group(field = ...)]` is the deprecated form and
-/// `#[group(selector = ...)]` is the current one, so keying the warning on the
-/// attribute name alone would condemn both. Keys are read from the
+/// That is the whole point: `#[edge_style(value = ...)]` is the deprecated
+/// shape and `#[edge_style(field = ..., line_style(...))]` is the current one,
+/// so keying the warning on the attribute name alone would condemn both. (The
+/// field-based `#[group]` used to be the other example; spytial-core 5.1.0
+/// removed it from the language, so it is now a parse error, not a warning.)
+/// Keys are read from the
 /// group-stripped token string for the same reason the parsers do — a `value`
 /// inside `line_style(...)` is not the legacy top-level `value`.
 fn deprecation_for(
@@ -1176,8 +1240,27 @@ fn parse_orientation_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, 
 }
 
 fn parse_group_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::Error> {
-    // `group` accepts two shapes (selector-based or field-based); accept the
-    // union of valid keys here and let the body pick the right variant.
+    // The field-based shape (`field`/`group_on`/`add_to_group`) left the
+    // language in spytial-core 5.1.0. Its keys are gone from the generated spec,
+    // so `validate_known_keys` would already refuse them — but as "unknown
+    // parameter `field`", which reads like a typo. Catch the shape first so the
+    // error says what replaced it.
+    if let Ok(meta) = attr.meta.require_list() {
+        if has_key(&strip_groups(&meta.tokens.to_string()), "field") {
+            return Err(err(
+                attr,
+                format!(
+                    "`#[group(field = ...)]` was removed from the layout-spec language in \
+                     spytial-core 5.1.0 (this crate vendors {}); write the selector form. A \
+                     binary selector whose first column is the group key and whose second is \
+                     the members says the same thing without tuple indices: over \
+                     `works_in: Employee -> Department`, `field = \"works_in\", group_on = 1, \
+                     add_to_group = 0` becomes `selector = \"~works_in\", name = \"...\"`.",
+                    spec_tables::SPYTIAL_CORE_VERSION,
+                ),
+            ));
+        }
+    }
     validate_known_keys(attr, "group")?;
     if let Ok(meta) = attr.meta.require_list() {
         let tokens = &meta.tokens;
@@ -1186,36 +1269,19 @@ fn parse_group_args(attr: &Attribute) -> Result<Option<SpatialAttribute>, syn::E
         // add_edge(...)/text_style(...) is mistaken for a top-level key.
         let stripped = strip_groups(&token_str);
         let negated = extract_bool_from_tokens(&stripped, "negated").unwrap_or(false);
+        let selector = extract_string_from_tokens(&stripped, "selector").unwrap_or_default();
+        let name =
+            extract_string_from_tokens(&stripped, "name").unwrap_or_else(|| "default".to_string());
+        let add_edge = parse_add_edge(attr, &token_str, &stripped)?;
+        let text_style = parse_text_style_group(attr, &token_str)?;
 
-        if has_key(&stripped, "field") {
-            // Field-based grouping
-            let field =
-                extract_string_from_tokens(&stripped, "field").unwrap_or_else(|| "id".to_string());
-            let group_on = extract_number_from_tokens(&stripped, "group_on").unwrap_or(1);
-            let add_to_group = extract_number_from_tokens(&stripped, "add_to_group").unwrap_or(2);
-
-            Ok(Some(SpatialAttribute::GroupField {
-                field,
-                group_on,
-                add_to_group,
-                negated,
-            }))
-        } else {
-            // Selector-based grouping
-            let selector = extract_string_from_tokens(&stripped, "selector").unwrap_or_default();
-            let name = extract_string_from_tokens(&stripped, "name")
-                .unwrap_or_else(|| "default".to_string());
-            let add_edge = parse_add_edge(attr, &token_str, &stripped)?;
-            let text_style = parse_text_style_group(attr, &token_str)?;
-
-            Ok(Some(SpatialAttribute::GroupSelector {
-                selector,
-                name,
-                add_edge,
-                text_style,
-                negated,
-            }))
-        }
+        Ok(Some(SpatialAttribute::GroupSelector {
+            selector,
+            name,
+            add_edge,
+            text_style,
+            negated,
+        }))
     } else {
         Ok(None)
     }
@@ -2414,17 +2480,25 @@ mod tests {
         deprecation_for(&attr, name)
     }
 
-    /// One attribute, two shapes, one of them deprecated. Keying the warning on
-    /// the attribute name alone would condemn the current form too.
+    /// The field-based group left the language in spytial-core 5.1.0. It is
+    /// no longer something the shim can warn about — the engine would refuse
+    /// the spec — so the parser rejects it, and the error has to name the
+    /// replacement rather than read as a mistyped key.
     #[test]
-    fn only_the_deprecated_group_shape_warns() {
-        let (dep, key) = dep_for(
-            parse_quote!(#[group(field = "rel", group_on = 1, add_to_group = 0)]),
-            "group",
-        )
-        .expect("the field-based group is deprecated upstream");
-        assert_eq!(key, Some("field"));
-        assert_eq!(dep.replaced_by, "group");
+    fn the_removed_group_shape_is_an_error_naming_its_replacement() {
+        let attr: Attribute = parse_quote!(#[group(field = "rel", group_on = 1, add_to_group = 0)]);
+        let msg = parse_group_args(&attr)
+            .expect_err("the field-based group no longer parses")
+            .to_string();
+        assert!(msg.contains("removed"), "must say it was removed:\n{msg}");
+        assert!(
+            msg.contains("selector = "),
+            "must show the selector form to write instead:\n{msg}"
+        );
+        assert!(
+            dep_for(attr, "group").is_none(),
+            "no deprecation entry: the manifest no longer lists the shape at all",
+        );
 
         assert!(
             dep_for(
@@ -2529,6 +2603,57 @@ mod tests {
             shim.contains(spec_tables::SPYTIAL_CORE_VERSION),
             "the note must say which spytial-core deprecated it:\n{shim}",
         );
+    }
+
+    /// The `source` text has to be recognisable as the attribute the user
+    /// wrote: conventional spacing, and every literal verbatim.
+    #[test]
+    fn source_text_renders_the_attribute_as_written() {
+        let attr: Attribute = parse_quote!(
+            #[orientation(selector = "{x, y : RBNode | x->y in left}", directions = ["left",   "below"], negated = true)]
+        );
+        assert_eq!(
+            render_attribute(&attr),
+            r#"#[orientation(selector = "{x, y : RBNode | x->y in left}", directions = ["left", "below"], negated = true)]"#
+        );
+
+        let attr: Attribute = parse_quote!(
+            #[atom_style(selector = r#"{x : RBNode | @:(x.color) = "Red"}"#, border_style(color = "red", width = 2.0))]
+        );
+        assert_eq!(
+            render_attribute(&attr),
+            r##"#[atom_style(selector = r#"{x : RBNode | @:(x.color) = "Red"}"#, border_style(color = "red", width = 2.0))]"##
+        );
+
+        let attr: Attribute = parse_quote!(#[hide_atom(selector = "Color + u32 + None")]);
+        assert_eq!(
+            render_attribute(&attr),
+            r#"#[hide_atom(selector = "Color + u32 + None")]"#
+        );
+    }
+
+    /// The derive stamps a `source` on every rule but `flag`, which is a bare
+    /// scalar. That has to stay in step with what spytial-core says it will
+    /// accept: a form that stops supporting `source` must stop being stamped,
+    /// and a form that starts supporting it should start.
+    #[test]
+    fn source_is_stamped_on_exactly_the_forms_that_accept_it() {
+        for spec in spec_tables::ATTRS {
+            let stamped = spec.attr != "flag";
+            assert_eq!(
+                spec_tables::SOURCE_SUPPORTED_BY.contains(&spec.yaml_key),
+                stamped,
+                "#[{}] (`{}`): the derive {} a `source` but the manifest says spytial-core {} one",
+                spec.attr,
+                spec.yaml_key,
+                if stamped { "stamps" } else { "does not stamp" },
+                if stamped {
+                    "does not accept"
+                } else {
+                    "accepts"
+                },
+            );
+        }
     }
 
     /// A `when_any_key` naming a key the attribute does not accept, or a
