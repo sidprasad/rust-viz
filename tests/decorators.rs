@@ -580,7 +580,10 @@ fn inferred_edge_draw_serializes_as_the_yaml_scalar() {
     let yaml = to_yaml(&decorators).unwrap();
     assert!(yaml.contains("draw: regions -> regions"));
     assert!(yaml.contains("draw: _ -> regions"));
-    assert!(!yaml.contains("source:"));
+    // `InferredEdgeDraw`'s own fields are `source`/`target`; neither may leak
+    // as a key. (`source:` does appear in the document — every rule carries
+    // its `source` block — so the check is on the draw's other field.)
+    assert!(!yaml.contains("target:"), "{yaml}");
 
     let draws: Vec<_> = decorators
         .directives
@@ -730,10 +733,6 @@ fn tag_directive_multiple() {
 #[align(selector = "Person", direction = "horizontal", negated = true)]
 #[cyclic(selector = "next", direction = "clockwise", negated = true)]
 #[group(selector = "Foo", name = "fooGroup", negated = true)]
-// The field-based group is deprecated upstream, but `hold: never` has to keep
-// working on both group shapes, so this one stays.
-#[allow(clippy::duplicated_attributes, deprecated)]
-#[group(field = "rel", group_on = 0, add_to_group = 1, negated = true)]
 struct AllNegated {
     id: u32,
 }
@@ -772,34 +771,21 @@ fn negated_constraints_emit_hold_never() {
         .expect("cyclic");
     assert!(cyclic.negated);
 
-    let mut group_selector_negated = false;
-    let mut group_field_negated = false;
-    for c in &decorators.constraints {
-        if let Constraint::Group(g) = c {
-            match &g.group {
-                GroupParams::SelectorBased { negated, .. } if *negated => {
-                    group_selector_negated = true;
-                }
-                GroupParams::FieldBased { negated, .. } if *negated => {
-                    group_field_negated = true;
-                }
-                _ => {}
-            }
+    let group_negated = decorators.constraints.iter().any(|c| match c {
+        Constraint::Group(g) => {
+            matches!(&g.group, GroupParams::SelectorBased { negated, .. } if *negated)
         }
-    }
-    assert!(
-        group_selector_negated,
-        "expected negated selector-based group"
-    );
-    assert!(group_field_negated, "expected negated field-based group");
+        _ => false,
+    });
+    assert!(group_negated, "expected negated selector-based group");
 
     // Wire-format: negation surfaces as `hold: never` inside each inner
     // constraint object (matching spytial-core's parser).
     let yaml = to_yaml(&decorators).unwrap();
     let hold_never_count = yaml.matches("hold: never").count();
     assert_eq!(
-        hold_never_count, 5,
-        "expected 5 `hold: never` entries (one per negated constraint), got {hold_never_count}\n{yaml}"
+        hold_never_count, 4,
+        "expected 4 `hold: never` entries (one per negated constraint), got {hold_never_count}\n{yaml}"
     );
 }
 
@@ -1063,4 +1049,143 @@ fn add_edge_block_round_trips() {
     assert!(yaml.contains("addEdge:"), "in:\n{yaml}");
     assert!(yaml.contains("points: togroup"), "in:\n{yaml}");
     assert!(yaml.contains("color: gray"), "in:\n{yaml}");
+}
+
+// ──────────────────────────────────────────────
+// source blocks (spytial-core 5.4)
+// ──────────────────────────────────────────────
+
+// `line!()` here is two lines above the first attribute on `Sourced`; the
+// location assertion below depends on that distance, so keep them adjacent.
+const SOURCED_ORIENTATION_LINE: u32 = line!() + 2;
+#[derive(Serialize, SpytialDecorators)]
+#[orientation(selector = "{x, y : Sourced | x->y in next}", directions = ["right"])]
+#[hide_atom(selector = "None")]
+#[flag(name = "hideDisconnected")]
+struct Sourced {
+    next: Option<Box<Sourced>>,
+}
+
+#[test]
+fn derived_rules_carry_the_attribute_as_written_and_its_location() {
+    let decorators = Sourced::decorators();
+
+    let orientation = decorators
+        .constraints
+        .iter()
+        .find_map(|c| match c {
+            Constraint::Orientation(o) => Some(&o.orientation),
+            _ => None,
+        })
+        .expect("orientation");
+    let source = orientation
+        .source
+        .as_ref()
+        .expect("the derive stamps a source");
+    assert_eq!(
+        source.text,
+        r#"#[orientation(selector = "{x, y : Sourced | x->y in next}", directions = ["right"])]"#
+    );
+    assert_eq!(
+        source.location.as_deref(),
+        Some(format!("{}:{SOURCED_ORIENTATION_LINE}", file!()).as_str()),
+        "location must be the attribute's own file:line, not the derive's",
+    );
+
+    let hide = decorators
+        .constraints
+        .iter()
+        .find(|c| matches!(c, Constraint::HideAtom(_)))
+        .expect("hide_atom");
+    let source = hide.source().expect("stamped");
+    assert_eq!(source.text, r#"#[hide_atom(selector = "None")]"#);
+    assert_eq!(
+        source.location.as_deref(),
+        Some(format!("{}:{}", file!(), SOURCED_ORIENTATION_LINE + 1).as_str()),
+    );
+
+    // `flag` is a bare scalar in the wire format and has nowhere to carry one.
+    let flag = decorators
+        .directives
+        .iter()
+        .find(|d| matches!(d, Directive::Flag(_)))
+        .expect("flag");
+    assert!(flag.source().is_none());
+}
+
+#[test]
+fn source_blocks_survive_the_yaml_round_trip() {
+    let decorators = Sourced::decorators();
+    let yaml = to_yaml(&decorators).unwrap();
+    assert!(yaml.contains("source:"), "{yaml}");
+    assert!(yaml.contains("text:"), "{yaml}");
+    assert!(yaml.contains("location:"), "{yaml}");
+
+    let parsed: SpytialDecoratorsType = serde_yaml_ng::from_str(&yaml).unwrap();
+    assert_eq!(parsed, decorators);
+}
+
+#[test]
+fn hand_built_rules_carry_no_source_unless_stamped() {
+    let built = SpytialDecoratorsBuilder::new()
+        .orientation("r", vec!["above"], false)
+        .hide_atom("None")
+        .source("#[hide_atom(selector = \"None\")]", Some("hand.rs:1"))
+        .flag("hideDisconnected")
+        .source("ignored: a flag has no block", None)
+        .build();
+
+    assert!(built.constraints[0].source().is_none());
+    let stamped = built.constraints[1]
+        .source()
+        .expect("source() stamps the last rule");
+    assert_eq!(stamped.text, "#[hide_atom(selector = \"None\")]");
+    assert_eq!(stamped.location.as_deref(), Some("hand.rs:1"));
+    assert!(built.directives[0].source().is_none());
+
+    let yaml = to_yaml(&built).unwrap();
+    assert_eq!(yaml.matches("source:").count(), 1, "{yaml}");
+}
+
+#[derive(Serialize, SpytialDecorators)]
+#[hide_atom(selector = "Shared")]
+struct SharedRuleOuter {
+    inner: SharedRuleInner,
+}
+
+#[derive(Serialize, SpytialDecorators)]
+#[hide_atom(selector = "Shared")]
+struct SharedRuleInner {
+    n: u32,
+}
+
+/// The same rule written on two types is one rule. spytial-core de-duplicates
+/// identical rules keeping the first source; comparing sources here would emit
+/// it twice and leave the engine to drop one.
+#[test]
+fn identical_rules_from_two_types_dedupe_ignoring_their_source() {
+    let value = SharedRuleOuter {
+        inner: SharedRuleInner { n: 1 },
+    };
+    let (_, decorators) = spytial::export::export_json_instance_with_decorators(&value, "");
+
+    let hides: Vec<&Constraint> = decorators
+        .constraints
+        .iter()
+        .filter(|c| matches!(c, Constraint::HideAtom(_)))
+        .collect();
+    assert_eq!(
+        hides.len(),
+        1,
+        "one rule, not one per type:\n{decorators:#?}"
+    );
+    assert!(
+        hides[0].source().is_some(),
+        "the kept copy keeps its source, so the report can still cite a site"
+    );
+
+    let a = SharedRuleOuter::decorators().constraints[0].clone();
+    let b = SharedRuleInner::decorators().constraints[0].clone();
+    assert_ne!(a, b, "the two sites differ only in source");
+    assert_eq!(a.without_source(), b.without_source());
 }

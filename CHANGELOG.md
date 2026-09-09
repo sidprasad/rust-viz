@@ -7,6 +7,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Changed: vendored spytial-core 4.4.2 → 5.4.1 (layout-spec language
+  2026-07-29 → 2026-08-25), via `scripts/update-spytial-core.sh 5.4.1`. The
+  browser assets, the language manifest, and the conformance harness move
+  together; the harness's `RunResult` format is still version 1, so
+  `tests/conformance.rs` runs unchanged against it, and the derive's spec
+  tables were regenerated from the new manifest.
+
+- **Breaking**: the field-based `#[group(field = ..., group_on = ...,
+  add_to_group = ...)]` is gone. spytial-core 5.1.0 removed `group.byField`
+  from the language outright — not deprecated, removed, so the engine no longer
+  parses it — and the update script refused to regenerate until the derive
+  stopped offering it, which is what that check is for. Writing the old form is
+  now a compile error that names the selector form and how the indices map
+  across (`field = "works_in", group_on = 1, add_to_group = 0` becomes
+  `selector = "~works_in", name = "..."`), rather than the generic "unknown
+  parameter `field`" the regenerated tables would otherwise produce.
+  `GroupParams::FieldBased` and `SpytialDecoratorsBuilder::group_field_based`
+  are removed with it; `GroupParams` keeps its single `SelectorBased` variant.
+  As with the earlier `icon:`/`projection:` removals, a YAML document
+  containing a field-based group no longer deserializes into
+  `SpytialDecorators`.
+
+- Behaviour that changed upstream and reaches Rust users unchanged: a unary
+  `#[tag(value = ...)]` now tags each selected atom with its own label instead
+  of silently doing nothing (5.1.0); an `inferred_edge` whose `draw` names a
+  group no `#[group]` defines is a layout-time warning and that edge is
+  skipped, where 4.x refused the whole spec (5.1.0); a relation whose tuples
+  differ in arity is accepted directly and its header replaced with an empty
+  one, so the longest-first tuple ordering `export` applies no longer decides
+  the consumed signature (5.2.1) — the ordering stays, being deterministic and
+  free, and per-tuple types are exact either way; and the graph element draws
+  an empty instance instead of failing (5.3.0).
+
+- Added: every rule the derive emits carries spytial-core 5.4's `source`
+  block — the attribute as the user wrote it (`#[orientation(selector = "…",
+  directions = ["left", "below"])]`, rendered from the parsed tokens with
+  literals verbatim) and its `file:line`, resolved at the attribute's own span
+  so the line is the attribute's rather than the derive's. The viewer's
+  conflict reports and warnings cite that text in place of the engine's own
+  description of the rule. `RuleSource` is the new type; every block-bodied
+  params struct gains an `Option<RuleSource>` `source` field (a breaking
+  addition for anyone building them as struct literals); `Constraint` and
+  `Directive` gain `source()`, `source_mut()` and `without_source()`;
+  `SpytialDecoratorsBuilder::source` stamps the rule pushed last. `flag` is
+  a bare scalar and carries none. De-duplication across types now ignores
+  `source`, keeping the first copy, which is what spytial-core does with the
+  same rule twice. A macro test holds the set of stamped forms to the
+  manifest's `source.supportedBy`, so a release that withdraws support fails
+  loudly.
+
+- Added: the generated spec tables now carry each selector field's declared
+  `arity` and its `accepts` list (5.1.0: which result shapes the field takes,
+  with column counts, what each means, and whether it needs another key such
+  as `inferred_edge`'s `draw`), plus `SOURCE_SUPPORTED_BY` and
+  `SOURCE_DISPLAYED_BY`. The macro does not enforce arity — a selector is an
+  opaque string until it meets a datum — but the data is now in the crate
+  for the generated reference, and for a selector parser to check against.
+
+- Added: `macros/src/attributes.md`, an attribute reference generated from
+  the manifest by spec-codegen alongside the tables: every attribute's keys,
+  vocabularies, bounds, defaults, selector arities, an example in Rust syntax,
+  the style blocks, and the deprecated forms with their mappings, linking to
+  spytial-core's own guides via the manifest's `documentation` URLs. The
+  derive's rustdoc includes it in place of the hand-written bullet list that
+  had to be checked against the tables by eye, and the guide's Decorators
+  page embeds the same file. The drift test covers it, and the update script
+  regenerates it.
+
+- Added: `templates/vendor/spytial-spec.schema.json`, spytial-core's JSON
+  Schema for a layout spec, vendored by the update script beside the manifest
+  (it has shipped beside it since 4.3.0). New `tests/schema.rs` validates the YAML the
+  derive emits — one decorated type per attribute family, the deprecated
+  rewrites, the `source` blocks, and the empty spec — against it, using the
+  `jsonschema` crate as a dev-dependency (no default features, so no HTTP
+  resolver). This is the check the engine cannot do itself: spytial-core's
+  parser ignores unknown keys silently, so a rule emitted under the wrong
+  name or in the wrong place renders a diagram quietly missing it. A negative
+  case proves the schema rejects an unknown key, and a version check ties the
+  schema, the manifest, and `VERSION.txt` to one release.
+
+- The published crate shrinks a little: spytial-core 5.2 trimmed the
+  conformance harness from 3.2 MB to about 0.9 MB (still excluded from the
+  crate) and the browser bundle from 2.7 MB to 2.5 MB.
+
 - Fixed: `diagram()` and `diagram_with_spec()` could never open a browser on
   Windows. The standalone path ran `start` as if it were a program, but
   `start` is a `cmd.exe` builtin with no executable behind it, so the spawn

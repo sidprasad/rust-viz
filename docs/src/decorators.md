@@ -111,7 +111,7 @@ Every decorator is a Rust attribute on a type that derives
 | `#[orientation(selector = "...", directions = [...])]` | Place matched pairs in a direction. Required; each value is one of `"above"`, `"below"`, `"left"`, `"right"`, or a `"directly*"` variant. `above`/`below` and `left`/`right` are mutually exclusive, and a `directly*` value admits only its own plain counterpart alongside it. |
 | `#[align(selector = "...", direction = "horizontal" \| "vertical")]` | Force matched atoms to share an axis. |
 | `#[cyclic(selector = "...", direction = "clockwise" \| "counterclockwise")]` | Arrange matched atoms around a ring. `direction` defaults to `clockwise`. |
-| `#[group(...)]` | Cluster related atoms into a labelled region — by `field` or by `selector` (the two are mutually exclusive; if `field` is present the selector is ignored). |
+| `#[group(selector = "...", name = "...")]` | Cluster related atoms into a labelled region. A binary selector builds one group per distinct first-column atom, keyed by it; a unary selector builds a single unkeyed group. |
 
 `orientation`, `align`, `cyclic`, and `group` each take an optional
 `negated = true` — see [Negated constraints](#negated-constraints) below.
@@ -167,9 +167,11 @@ may also be unary: the single atom feeds both ends.
 
 Malformed `draw` strings are compile errors, including the redundant
 `"_ -> _"` (that's the default — drop the key). The group *name*, though, is
-resolved by spytial-core when it parses the assembled spec: decorators compose
+resolved by spytial-core against the assembled spec: decorators compose
 across types, so no single attribute site can see which `group` constraints
-will end up in the spec.
+will end up in the spec. A name that no `group` defines is a layout-time
+warning (since spytial-core 5.1.0) and that edge is skipped; the rest of the
+diagram still renders.
 
 A selector-based `group` additionally takes `add_edge` — the connector between
 the group's key and the group. Bare form `add_edge = "togroup"` (or
@@ -188,9 +190,8 @@ filled look), and `edge_style`'s `value`/`style`/`weight` become
 **Deprecation warnings:** every form spytial-core has deprecated now warns at
 compile time, naming the replacement and how the fields map across. That covers
 whole attributes (`#[atom_color]`, `#[icon]`) and single shapes of attributes
-that are otherwise current — `#[group(field = ...)]` warns while
-`#[group(selector = ...)]` does not, and `#[edge_style(value = ...)]` warns
-while `#[edge_style(field = ..., line_style(...))]` does not. Nothing stops
+that are otherwise current — `#[edge_style(value = ...)]` warns while
+`#[edge_style(field = ..., line_style(...))]` does not. Nothing stops
 compiling; the deprecated forms still work exactly as before. To keep one
 deliberately, put `#[allow(deprecated)]` on the type:
 
@@ -212,6 +213,30 @@ when upstream's does.
 These map onto the same builder and YAML layer that spytial-core consumes,
 so anything expressible here is also expressible as a hand-written spec
 passed to [`diagram_with_spec`](./library.md).
+
+## Where a rule came from
+
+Every rule the derive emits is stamped with a `source` block: the attribute
+exactly as you wrote it and its `file:line`. When the viewer reports a
+conflict — two rules that cannot both hold — or warns about a rule that
+matched nothing, it cites that text in place of its own description of the
+rule, so the report reads `#[orientation(selector = "…", directions = ["left",
+"below"])] at src/tree.rs:14` and you can go straight to the line. Nothing to
+enable; a hand-written spec passed to `diagram_with_spec` needs no `source`,
+because there the YAML is what you wrote. The builder's `.source(text,
+location)` stamps the rule you pushed last, if you assemble decorators by hand
+and want the same treatment.
+
+## Attribute reference
+
+The reference below is generated from spytial-core's own language manifest,
+the same file the derive's compile-time checks come from, so the keys,
+vocabularies, bounds, defaults, and selector arities are the engine's
+description of the language at the vendored version. It is the same text
+[docs.rs](https://docs.rs/spytial/latest/spytial/derive.SpytialDecorators.html)
+shows on the derive.
+
+{{#include ../../macros/src/attributes.md}}
 
 ## Negated constraints
 
