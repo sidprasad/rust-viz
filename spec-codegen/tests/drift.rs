@@ -6,7 +6,8 @@
 //! nothing warns — the diagrams just stop matching the spec.
 
 use spytial_spec_codegen::{
-    first_difference, generate, manifest_path, tables_path, vendored_manifest,
+    first_difference, generate, generate_reference, manifest_path, reference_path, tables_path,
+    vendored_manifest,
 };
 
 #[test]
@@ -20,6 +21,27 @@ fn checked_in_tables_match_the_vendored_manifest() {
             "\n{} is out of date with {}.\n{}\n\n\
              Regenerate: cargo run --manifest-path spec-codegen/Cargo.toml\n",
             tables_path().display(),
+            manifest_path().display(),
+            diff,
+        );
+    }
+}
+
+/// The attribute reference the derive's rustdoc includes is generated from the
+/// same manifest, and drifts the same way: re-vendor without regenerating and
+/// the docs describe the previous language.
+#[test]
+fn checked_in_reference_matches_the_vendored_manifest() {
+    let generated =
+        generate_reference(&vendored_manifest().expect("vendored manifest is readable"))
+            .expect("manifest generates a reference cleanly");
+    let checked_in = std::fs::read_to_string(reference_path()).expect("attributes.md is readable");
+
+    if let Some(diff) = first_difference(&checked_in, &generated) {
+        panic!(
+            "\n{} is out of date with {}.\n{}\n\n\
+             Regenerate: cargo run --manifest-path spec-codegen/Cargo.toml\n",
+            reference_path().display(),
             manifest_path().display(),
             diff,
         );

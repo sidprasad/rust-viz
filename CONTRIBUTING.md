@@ -11,6 +11,11 @@ cargo test --lib --tests
 cargo test --doc
 ```
 
+The crate builds on Rust 1.80, but running the test suite needs 1.85: the
+schema-validation tests depend on the `jsonschema` crate, whose floor that is.
+The conformance tests additionally look for Node on `PATH` (or `SPYTIAL_NODE`)
+and skip, rather than fail, without it.
+
 The serde-data-model corpus in `eval-corpus/` is a separate workspace, so the
 commands above do not reach it. Run its tests directly:
 

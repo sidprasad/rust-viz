@@ -12,6 +12,6 @@ pub use runtime::{
     BorderStyle, Constraint, CyclicConstraint, CyclicParams, DecoProbe, DecoratorRegistration,
     DefaultDecorators, Directive, DrawEnd, FillStyle, GroupConstraint, GroupEdge, GroupEdgePoints,
     GroupEdgeValue, GroupParams, HasSpytialDecorators, IconPlacement, IconStyle, InferredEdgeDraw,
-    LinePattern, LineStyle, OrientationConstraint, OrientationParams, SpytialDecorators,
-    SpytialDecoratorsBuilder, TextSize, TextStyle,
+    LinePattern, LineStyle, OrientationConstraint, OrientationParams, RuleSource,
+    SpytialDecorators, SpytialDecoratorsBuilder, TextSize, TextStyle,
 };

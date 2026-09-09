@@ -961,12 +961,13 @@ fn field_colliding_with_different_arity_builtin_keeps_longest_header() {
 
 #[test]
 fn mixed_arity_relation_orders_longest_tuples_first() {
-    // spytial-core's `DataInstanceNormalizer.inferRelationSignatures` runs on
-    // every `JSONDataInstance` construction and keeps a relation header only
-    // when its length equals the *first* tuple's arity — otherwise it re-infers
-    // a signature at that arity. The joined header has the longest arity that
-    // occurs, so a longest tuple must come first, regardless of which side of
-    // the collision serialized first.
+    // The ordering was introduced for spytial-core 4.x, whose normalizer kept a
+    // relation header only when its length equaled the *first* tuple's arity.
+    // Since 5.2.1 a mixed-arity relation's header is replaced with an empty
+    // one whatever the order, so the engine no longer depends on this — but
+    // the emitted datum is still a contract of its own: the header describes
+    // the longest tuple, a longest tuple comes first, and neither depends on
+    // which side of the collision serialized first.
     let forward = export_json_instance(&MixedArity {
         a: HasIdx { idx: 9 },
         b: vec![10, 11],

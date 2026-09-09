@@ -54,8 +54,9 @@ exclude = [
     # The conformance harness is test-only: tests/conformance.rs shells out to
     # it, nothing in `src/` reads it. The rest of templates/vendor is bundled
     # into the rendered page by `include_str!` and has to ship; this one file is
-    # 3.2 MB that would otherwise near-double the published crate for code no
-    # consumer runs. tests/conformance.rs skips when it is absent, which is
+    # ~0.9 MB (3.2 MB before spytial-core 5.2) that would otherwise grow the
+    # published crate by a quarter for code no consumer runs.
+    # tests/conformance.rs skips when it is absent, which is
     # exactly what a consumer building from the published crate sees.
     "templates/vendor/spytial-check.js",
 ]
@@ -70,3 +71,12 @@ serde-value = "0.7"
 # version. Do not let a downstream lockfile pair a newer runtime with an older
 # compatible macro that predates that output.
 spytial_export_macros = { version = "=0.3.0", path = "./macros" }
+
+[dev-dependencies]
+# tests/schema.rs validates emitted specs against spytial-core's JSON Schema
+# (draft 2020-12). The schema's references are all local `$defs`, so the
+# resolver features are left off — and with them reqwest, and `idna`, whose
+# ICU tables want a newer rustc than anything else here. This is a
+# dev-dependency: consumers keep the crate's 1.80 floor, but running the test
+# suite needs rustc 1.85, the validator's own floor.
+jsonschema = { version = "0.55", default-features = false }

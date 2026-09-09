@@ -47,6 +47,11 @@ detect that trait implementation on stable Rust. Call `T::decorators()`, encode
 it with `spytial_annotations::to_yaml`, and pass it to `diagram_with_spec`
 instead.
 
+Rules assembled through `SpytialDecoratorsBuilder` carry no `source` unless
+you stamp one: `.source("#[orientation(...)]", Some("src/tree.rs:14"))` marks
+the rule pushed just before it, and that text is what the viewer cites in a
+conflict report. The derive does this for every attribute automatically.
+
 ## `diagram_with_spec(&value, spec)` — hand-written constraints
 
 ```rust
