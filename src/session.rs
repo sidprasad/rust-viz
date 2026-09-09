@@ -9,17 +9,7 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process;
-#[cfg(any(
-    target_os = "macos",
-    target_os = "windows",
-    target_os = "linux",
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-    target_os = "dragonfly"
-))]
-use std::process::Command;
+use std::process::{self, Command};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, SystemTime};
@@ -466,16 +456,29 @@ fn write_response(stream: &mut TcpStream, status: &str, content_type: &str, body
     }
 }
 
-fn open_browser(_target: &str) -> io::Result<()> {
+/// The platform's "open this in the default browser" command, ready to spawn.
+///
+/// Shared by the session viewer and the standalone [`crate::diagram`] path,
+/// so there is one place that knows the platform quirks. The one that bit:
+/// on Windows the opener is `start`, which is a `cmd.exe` builtin rather than
+/// a program, so it has to be reached through `cmd /C`. The empty argument
+/// after `start` is the window title; without it `start` takes the first
+/// quoted argument (a path with a space in it) as the title and opens nothing.
+///
+/// Building the command is separate from spawning it so the shape can be
+/// tested without opening a browser.
+pub(crate) fn browser_command(target: &str) -> io::Result<Command> {
     #[cfg(target_os = "macos")]
     {
-        Command::new("open").arg(_target).spawn().map(|_| ())
+        let mut command = Command::new("open");
+        command.arg(target);
+        Ok(command)
     }
     #[cfg(target_os = "windows")]
     {
         let mut command = Command::new("cmd");
-        command.args(["/C", "start", ""]);
-        command.arg(_target).spawn().map(|_| ())
+        command.args(["/C", "start", ""]).arg(target);
+        Ok(command)
     }
     #[cfg(any(
         target_os = "linux",
@@ -485,7 +488,9 @@ fn open_browser(_target: &str) -> io::Result<()> {
         target_os = "dragonfly"
     ))]
     {
-        Command::new("xdg-open").arg(_target).spawn().map(|_| ())
+        let mut command = Command::new("xdg-open");
+        command.arg(target);
+        Ok(command)
     }
     #[cfg(not(any(
         target_os = "macos",
@@ -497,11 +502,17 @@ fn open_browser(_target: &str) -> io::Result<()> {
         target_os = "dragonfly"
     )))]
     {
+        let _ = target;
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "no known browser-open command for this platform",
         ))
     }
+}
+
+/// Open `target` (a file path or URL) in the default browser, without waiting.
+pub(crate) fn open_browser(target: &str) -> io::Result<()> {
+    browser_command(target)?.spawn().map(|_| ())
 }
 
 #[cfg(test)]
@@ -765,6 +776,43 @@ mod tests {
         assert_eq!(captures[0]["expression"], "W(42)");
         drop(captures);
         let _ = fs::remove_file(blocker);
+    }
+
+    /// The launcher has to name a program the process spawner can find.
+    /// `start` is a `cmd.exe` builtin, not an executable, so
+    /// `Command::new("start")` fails with "file not found" on every Windows
+    /// machine — which is how `diagram()` shipped, while this module had the
+    /// right form. Pinning the shape here covers both callers.
+    #[test]
+    fn browser_command_names_a_real_executable_on_this_platform() {
+        let target = "C:\\spytial dir\\session.html";
+        let command = match browser_command(target) {
+            Ok(command) => command,
+            Err(error) if error.kind() == io::ErrorKind::Unsupported => return,
+            Err(error) => panic!("could not build the browser command: {error}"),
+        };
+        let program = command.get_program().to_string_lossy().into_owned();
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        assert_ne!(
+            program, "start",
+            "`start` is a shell builtin, not a program"
+        );
+        if cfg!(target_os = "windows") {
+            assert_eq!(program, "cmd");
+            // The empty string is the window title; without it `start` reads a
+            // quoted path as the title and opens nothing.
+            assert_eq!(args, ["/C", "start", "", target]);
+        } else if cfg!(target_os = "macos") {
+            assert_eq!(program, "open");
+            assert_eq!(args, [target]);
+        } else {
+            assert_eq!(program, "xdg-open");
+            assert_eq!(args, [target]);
+        }
     }
 
     #[test]

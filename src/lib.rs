@@ -36,7 +36,7 @@ pub use spytial_export_macros::SpytialDecorators;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
-use std::process::{self, Command};
+use std::process;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
@@ -360,38 +360,11 @@ fn diagram_instance_impl(json_instance: &jsondata::JsonDataInstance, spec: &str)
         return;
     }
 
-    #[cfg(target_os = "macos")]
-    let open_cmd: Option<&str> = Some("open");
-    #[cfg(target_os = "windows")]
-    let open_cmd: Option<&str> = Some("start");
-    #[cfg(any(
-        target_os = "linux",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly"
-    ))]
-    let open_cmd: Option<&str> = Some("xdg-open");
-    #[cfg(not(any(
-        target_os = "macos",
-        target_os = "windows",
-        target_os = "linux",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly",
-    )))]
-    let open_cmd: Option<&str> = None;
-
-    let Some(open_cmd) = open_cmd else {
-        eprintln!(
-            "spytial: no known browser-open command for this platform. Open this file manually: {}",
-            temp_file_path.display()
-        );
-        return;
-    };
-
-    if let Err(err) = Command::new(open_cmd).arg(&temp_file_path).spawn() {
+    // One launcher for both the standalone page and the session viewer. This
+    // path used to carry its own platform table, which on Windows named
+    // `start` — a `cmd.exe` builtin, not a program — so the spawn failed on
+    // every call there and nobody noticed, because CI runs headless.
+    if let Err(err) = session::open_browser(&temp_file_path.to_string_lossy()) {
         eprintln!(
             "spytial: failed to open browser ({err}). Open this file manually: {}",
             temp_file_path.display()
