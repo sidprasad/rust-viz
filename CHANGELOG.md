@@ -91,6 +91,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   conformance harness from 3.2 MB to about 0.9 MB (still excluded from the
   crate) and the browser bundle from 2.7 MB to 2.5 MB.
 
+- Fixed: `diagram()` and `diagram_with_spec()` could never open a browser on
+  Windows. The standalone path ran `start` as if it were a program, but
+  `start` is a `cmd.exe` builtin with no executable behind it, so the spawn
+  failed with "file not found" on every call and the user was told to open
+  the temp file by hand. The `dbg!` session viewer already had the right
+  form (`cmd /C start "" <path>`; the empty string is the window title
+  `start` would otherwise take a quoted path for). The standalone path now
+  calls that same launcher, so there is one implementation, and a unit test
+  holds it to naming a real executable on every platform. CI on Windows
+  runs with `SPYTIAL_NO_OPEN`, which is why this shipped.
+
 ## [0.3.0] - 2026-09-08
 
 - Changed: `spytial::dbg!` now accepts any `Debug + Serialize` value and
