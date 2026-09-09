@@ -339,7 +339,15 @@ fn render_session_html(captures: &[Value], capture_endpoint: Option<&str>) -> St
         .replace("{{ capture_endpoint_literal }}", &endpoint_literal)
 }
 
-fn safe_javascript_string(value: &str) -> String {
+/// `value` as a JavaScript string literal that is safe to paste into an
+/// inline `<script>`.
+///
+/// JSON string syntax is valid JavaScript string syntax, so the literal
+/// evaluates to exactly `value`; escaping `<`, `>` and `&` on top keeps a
+/// `</script>` (or a comment opener) inside the value from being read by the
+/// HTML parser, which runs before the script does and does not care about
+/// quoting. Shared by the session viewer and the standalone diagram page.
+pub(crate) fn safe_javascript_string(value: &str) -> String {
     serde_json::to_string(value)
         .unwrap_or_else(|_| "\"\"".to_string())
         .replace('<', "\\u003c")

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Fixed: a captured value could break, or script, the standalone diagram
+  page. `diagram()` and `diagram_with_spec()` pasted the JSON datum and the
+  YAML spec into JavaScript template literals by plain substitution, so a
+  string holding a backtick ended the literal and the page showed nothing,
+  one holding `${…}` ran as an expression in the viewer, and one holding
+  `</script>` closed the element outright — the HTML parser runs before the
+  script and ignores quoting. Selectors in the spec were exposed the same
+  way. Both are now embedded as JSON string literals with `<`, `>` and `&`
+  unicode-escaped and decoded with `JSON.parse`, through the same helper
+  the `dbg!` session viewer has used since 0.3.0. The page's own redundant
+  re-parse of the datum is gone with it, and an end-to-end test drives a
+  string carrying all four hazards through `diagram_with_spec()` and checks
+  that the page contains no raw copy and hands both the datum and the spec
+  back unchanged.
+
 - Changed: vendored spytial-core 4.4.2 → 5.4.1 (layout-spec language
   2026-07-29 → 2026-08-25), via `scripts/update-spytial-core.sh 5.4.1`. The
   browser assets, the language manifest, and the conformance harness move

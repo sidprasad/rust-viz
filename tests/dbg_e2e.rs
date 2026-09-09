@@ -125,13 +125,29 @@ fn unique_output_path(tag: &str) -> PathBuf {
 /// diagram path writes. This checks the hand-off to the browser, not merely a
 /// separate call to `export_json_instance`.
 fn embedded_datum(contents: &str) -> JsonDataInstance {
+    let json = embedded_literal(contents, "const jsonData = JSON.parse(", ");");
+    serde_json::from_str(&json).expect("embedded diagram datum should be valid JSON")
+}
+
+/// The spec string the standalone page hands to spytial-core. YAML, so the
+/// page uses the string itself rather than parsing it.
+fn embedded_spec(contents: &str) -> String {
+    embedded_literal(contents, "const spytialSpec = ", ";\n")
+}
+
+/// Decode the JSON string literal between `marker` and `terminator`, the way
+/// the browser would when it evaluates the script: a JSON string literal is a
+/// JavaScript string literal, so decoding it with a JSON parser gives the same
+/// value. The literal cannot contain a raw newline, so `;\n` is a safe
+/// terminator for a whole statement.
+fn embedded_literal(contents: &str, marker: &str, terminator: &str) -> String {
     let (_, after_marker) = contents
-        .split_once("const jsonData = `")
-        .expect("rendered HTML should declare its JSON datum");
-    let (json, _) = after_marker
-        .split_once("`;")
-        .expect("rendered HTML should terminate its JSON datum");
-    serde_json::from_str(json).expect("embedded diagram datum should be valid JSON")
+        .split_once(marker)
+        .unwrap_or_else(|| panic!("rendered HTML should contain `{marker}`"));
+    let (literal, _) = after_marker
+        .split_once(terminator)
+        .expect("rendered HTML should terminate the literal");
+    serde_json::from_str(literal).expect("the embedded value should be a JSON string literal")
 }
 
 /// Parse the capture envelopes embedded in a persistent viewer snapshot.
@@ -689,4 +705,75 @@ fn concurrent_dbg_calls_do_not_panic() {
         "no thread should panic under concurrent dbg!, got: {:?}",
         *panics
     );
+}
+
+// ──────────────────────────────────────────────
+// The standalone page must survive hostile strings in the value and the spec
+// ──────────────────────────────────────────────
+
+/// Before this test, both were pasted into JavaScript template literals by
+/// plain substitution, so a backtick ended the literal, `${…}` ran as code,
+/// and `</script>` closed the script element (the HTML parser runs first and
+/// does not care about quoting). The page now receives JSON string literals
+/// with `<`, `>` and `&` escaped, and decodes them with `JSON.parse`.
+#[test]
+fn diagram_escapes_hostile_strings_in_the_page() {
+    suppress_browser_open();
+
+    // A backtick, a template expression, a script terminator and a comment
+    // opener, all in one label.
+    const HOSTILE: &str = "x`${alert(1)}</script><!--";
+
+    #[derive(Debug, Serialize)]
+    struct Note {
+        text: String,
+    }
+
+    let value = Note {
+        text: HOSTILE.to_string(),
+    };
+    let spec = format!(
+        "constraints:\n  - orientation:\n      selector: \"{HOSTILE}\"\n      directions: [above]\n"
+    );
+    let target = unique_output_path("diagram-escaping");
+
+    let _guard = diagram_lock();
+    env::set_var("SPYTIAL_OUTPUT_PATH", &target);
+    spytial::diagram_with_spec(&value, &spec);
+    let read_result = fs::read_to_string(&target);
+    env::remove_var("SPYTIAL_OUTPUT_PATH");
+    drop(_guard);
+
+    let contents = read_result.expect("diagram_with_spec should write the page");
+    let _ = fs::remove_file(&target);
+
+    // Nothing hostile reaches the page raw: not the value, not the spec.
+    assert!(
+        !contents.contains(HOSTILE),
+        "the hostile string was pasted into the page verbatim"
+    );
+    // `${…}` and a backtick are inert inside a double-quoted string literal,
+    // which is what both placeholders must now receive — never a template
+    // literal, where either would be live.
+    for declaration in ["const jsonData = JSON.parse(\"", "const spytialSpec = \""] {
+        assert!(
+            contents.contains(declaration),
+            "expected a double-quoted string literal after `{declaration}`"
+        );
+    }
+
+    // The template's own <script> elements are the only ones on the page.
+    let template = include_str!("../templates/template.html");
+    assert_eq!(
+        contents.matches("</script").count(),
+        template.matches("</script").count(),
+        "a value or spec added or removed a script terminator"
+    );
+
+    // And the browser gets the data back byte for byte.
+    assert_eq!(
+        serde_json::to_value(embedded_datum(&contents)).unwrap(),
+        serde_json::to_value(export_json_instance(&value)).unwrap()
+    );
+    assert_eq!(embedded_spec(&contents), spec);
 }
