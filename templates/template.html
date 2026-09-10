@@ -85,10 +85,14 @@
     <div id="error-core"></div>
 
     <script>
-        // Embedded data passed from Rust (using simple string replacement)
-        const spytialSpec = `{{ spytial_spec }}`;
-        
-        const jsonData = `{{ json_data }}`;
+        // Embedded data passed from Rust. Each placeholder is filled with a
+        // JSON string literal whose `<`, `>` and `&` are unicode-escaped, so
+        // no captured value can end the literal, run as `${...}`, or close
+        // this <script> — the same hand-off the session viewer uses. The spec
+        // is YAML and is used as that string; the datum is JSON text, so it
+        // is parsed into the object here.
+        const spytialSpec = {{ spytial_spec_literal }};
+        const jsonData = JSON.parse({{ json_data_literal }});
 
         // Global variables for reset functionality
         let instanceLayout = null;
@@ -142,13 +146,7 @@
             try {
 
 
-                // Parse JSON data if it's a string
-                let parsedData;
-                try {
-                    parsedData = typeof jsonData === 'string' ? JSON.parse(jsonData) : jsonData;
-                } catch (parseError) {
-                    throw new Error(`Failed to parse JSON data: ${parseError.message}`);
-                }
+                const parsedData = jsonData;
                 console.log(parsedData)
                 // Create a data instance from the JSON data
                 if (typeof coreApi.JSONDataInstance !== 'function') {
@@ -235,9 +233,12 @@
                 errorDiv.innerHTML = `
                     <div style="color: red; padding: 10px; border: 1px solid red; background-color: #ffe6e6; margin-top: 10px;">
                         <h3>Error</h3>
-                        <p>${message}</p>
+                        <p></p>
                     </div>
                 `;
+                // textContent, not interpolation: engine messages quote atom
+                // labels, which are user data and must not be parsed as HTML.
+                errorDiv.querySelector('p').textContent = message;
             } else {
                 console.error('Error div not found. Error message:', message);
             }
@@ -253,13 +254,16 @@
                 errorDiv.innerHTML = `
                     <div style="color: #0366d6; padding: 20px; border: 1px solid #0366d6; background-color: #f1f8ff; margin-top: 10px; border-radius: 6px;">
                         <h3>🦀 Rust Data Structure</h3>
-                        <p>${message}</p>
+                        <p></p>
                         <details style="margin-top: 15px;">
                             <summary style="cursor: pointer; font-weight: bold;">Show JSON Data Structure</summary>
-                            <pre style="background: #f6f8fa; padding: 10px; border-radius: 4px; margin-top: 10px; font-size: 12px; max-height: 300px; overflow-y: auto;">${JSON.stringify(JSON.parse(jsonData), null, 2)}</pre>
+                            <pre style="background: #f6f8fa; padding: 10px; border-radius: 4px; margin-top: 10px; font-size: 12px; max-height: 300px; overflow-y: auto;"></pre>
                         </details>
                     </div>
                 `;
+                // Same as showError: the message and the datum are user data.
+                errorDiv.querySelector('p').textContent = message;
+                errorDiv.querySelector('pre').textContent = JSON.stringify(jsonData, null, 2);
             } else {
                 console.error('Error div not found. Info message:', message);
             }

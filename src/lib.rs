@@ -339,8 +339,18 @@ fn diagram_instance_impl(json_instance: &jsondata::JsonDataInstance, spec: &str)
             "/*__REACT_COMPONENTS_JS__*/",
             include_str!("../templates/vendor/react-component-integration.global.js"),
         )
-        .replace("{{ json_data }}", &json_data)
-        .replace("{{ spytial_spec }}", spec);
+        // Both go in as JSON string literals with `<`, `>` and `&` escaped,
+        // which the page hands to `JSON.parse`. Raw substitution into a
+        // template literal let a value containing a backtick, `${`, or
+        // `</script>` break — or script — the page.
+        .replace(
+            "{{ json_data_literal }}",
+            &session::safe_javascript_string(&json_data),
+        )
+        .replace(
+            "{{ spytial_spec_literal }}",
+            &session::safe_javascript_string(spec),
+        );
 
     let temp_file_path = diagram_output_path();
     if let Err(err) = fs::write(&temp_file_path, rendered_html) {
