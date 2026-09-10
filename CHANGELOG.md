@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Fixed: a diagram could not tell `0.0` from `-0.0`. Primitive atoms are
+  interned so equal values share one node, and floats were keyed through `==`,
+  which calls the two signed zeros equal. The second one serialized therefore
+  inherited the first one's label, and `[0.0, -0.0]` drew as `[0.0, 0.0]` — a
+  distinction `{:?}` shows and the datum silently dropped. Floats are now keyed
+  by bit pattern, so the zeros are separate atoms. Nothing else moves: for
+  non-NaN floats `==` and bit equality agree everywhere except at zero, and NaN
+  still gets a fresh atom per occurrence, since `==` is no guide there either.
+
 - Fixed: a captured value could break, or script, the standalone diagram
   page. `diagram()` and `diagram_with_spec()` pasted the JSON datum and the
   YAML spec into JavaScript template literals by plain substitution, so a
