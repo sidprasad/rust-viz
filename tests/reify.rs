@@ -267,3 +267,77 @@ fn colliding_relation_names_round_trip() {
         b: Meters(1.5),
     });
 }
+
+#[test]
+fn self_describing_representations_round_trip() {
+    // `flatten`, `untagged` and the tagged enum forms buffer a value before
+    // they know its type, so they reach `deserialize_any` instead of following
+    // `T`. They used to fail outright. The externally tagged enum below is the
+    // demanding one: its atom is reached through the flattened parent, so it
+    // has to be told apart from a plain struct atom by nothing but its label.
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    struct Inner {
+        y: i32,
+    }
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    enum External {
+        Unit,
+        Newtype(i32),
+        Tuple(i32, i32),
+        Struct { w: i32 },
+    }
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    struct Flat {
+        x: i32,
+        #[serde(flatten)]
+        rest: Inner,
+        e: External,
+    }
+
+    for e in [
+        External::Unit,
+        External::Newtype(3),
+        External::Tuple(3, 4),
+        External::Struct { w: 5 },
+    ] {
+        full_roundtrip(Flat {
+            x: 1,
+            rest: Inner { y: 2 },
+            e,
+        });
+    }
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    #[serde(tag = "kind")]
+    enum Internally {
+        Struct { v: i32 },
+        Unit,
+    }
+    full_roundtrip(Internally::Struct { v: 1 });
+    full_roundtrip(Internally::Unit);
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    #[serde(tag = "t", content = "c")]
+    enum Adjacently {
+        Newtype(i32),
+        Unit,
+    }
+    full_roundtrip(Adjacently::Newtype(1));
+    full_roundtrip(Adjacently::Unit);
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    #[serde(untagged)]
+    enum Untagged {
+        Struct { q: i32 },
+        Number(i32),
+        Text(String),
+        Nothing,
+    }
+    full_roundtrip(Untagged::Struct { q: 1 });
+    full_roundtrip(Untagged::Number(7));
+    full_roundtrip(Untagged::Text("s".into()));
+    full_roundtrip(Untagged::Nothing);
+}

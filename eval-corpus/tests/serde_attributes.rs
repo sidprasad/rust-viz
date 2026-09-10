@@ -1,0 +1,235 @@
+//! The corpus's second axis: serde's *representation* attributes.
+//!
+//! `serde_data_model.rs` covers the 29 structural categories and `pbt.rs`
+//! nests them at random. Neither reaches this: `#[serde(flatten)]`,
+//! `#[serde(untagged)]` and the tagged enum forms add no new category, they
+//! change how an existing one is written down. They matter here because all
+//! of them ask the format to describe itself — serde buffers the value before
+//! it knows the type — which is the one thing a type-driven reify cannot do by
+//! following a schema. They reach `Deserializer::deserialize_any`, and until
+//! it was implemented every case in this file failed outright.
+//!
+//! [`representations_round_trip`] runs both oracles over the forms that work.
+//! [`skip_drops_the_field`] pins the one that cannot: the limit is serde's,
+//! not Spytial's.
+
+use serde::{Deserialize, Serialize};
+use spytial_eval_corpus::parity;
+
+// ── plain renaming ───────────────────────────────────────────────────────
+
+/// `rename` moves a field name; `Debug` still prints the Rust name.
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+struct Renamed {
+    #[serde(rename = "outer")]
+    inner: i32,
+}
+
+/// `rename_all` moves every field name at once.
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct RenamedAll {
+    long_field_name: i32,
+}
+
+// ── flatten ──────────────────────────────────────────────────────────────
+
+/// Flattened into its parent, which turns the parent into a `map`.
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+struct Inner {
+    y: i32,
+}
+
+/// `flatten` erases the struct boundary in the datum but not in `{:?}`.
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+struct Flat {
+    x: i32,
+    #[serde(flatten)]
+    rest: Inner,
+}
+
+/// An externally tagged enum *inside* a flattened parent. The enum's atom is
+/// reached through `deserialize_any`, so this is the case that needs a variant
+/// atom told apart from a struct atom.
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+enum External {
+    Unit,
+    Newtype(i32),
+    Tuple(i32, i32),
+    Struct { w: i32 },
+}
+
+/// Pairs a flattened struct with each externally tagged variant shape.
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+struct FlatWithEnum {
+    #[serde(flatten)]
+    rest: Inner,
+    e: External,
+}
+
+// ── tagged enum representations ──────────────────────────────────────────
+
+/// Internally tagged: the variant name becomes a field, so the whole value is
+/// written as a struct.
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[serde(tag = "kind")]
+enum Internally {
+    Struct { v: i32 },
+    Unit,
+}
+
+/// Adjacently tagged: tag and content sit side by side in one struct.
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[serde(tag = "t", content = "c")]
+enum Adjacently {
+    Newtype(i32),
+    Struct { v: i32 },
+    Unit,
+}
+
+/// Untagged: the variant is recovered by shape alone, which is what forces the
+/// buffering.
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[serde(untagged)]
+enum Untagged {
+    Struct { q: i32 },
+    Number(i32),
+    Text(String),
+    Nothing,
+}
+
+// ── optional and defaulted fields ────────────────────────────────────────
+
+/// `skip_serializing_if` omits a field from the datum entirely; `default`
+/// puts it back.
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+struct Optional {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    a: Option<i32>,
+    #[serde(default)]
+    b: i32,
+}
+
+/// One case: a label and the oracle run for it.
+struct Case {
+    what: &'static str,
+    run: fn() -> Result<String, String>,
+}
+
+macro_rules! case {
+    ($what:literal, $value:expr) => {
+        Case {
+            what: $what,
+            run: || parity($value),
+        }
+    };
+}
+
+fn cases() -> Vec<Case> {
+    vec![
+        case!("rename", Renamed { inner: 5 }),
+        case!("rename_all", RenamedAll { long_field_name: 5 }),
+        case!(
+            "flatten",
+            Flat {
+                x: 1,
+                rest: Inner { y: 2 }
+            }
+        ),
+        case!(
+            "flatten + external unit",
+            FlatWithEnum {
+                rest: Inner { y: 2 },
+                e: External::Unit
+            }
+        ),
+        case!(
+            "flatten + external newtype",
+            FlatWithEnum {
+                rest: Inner { y: 2 },
+                e: External::Newtype(3)
+            }
+        ),
+        case!(
+            "flatten + external tuple",
+            FlatWithEnum {
+                rest: Inner { y: 2 },
+                e: External::Tuple(3, 4)
+            }
+        ),
+        case!(
+            "flatten + external struct",
+            FlatWithEnum {
+                rest: Inner { y: 2 },
+                e: External::Struct { w: 5 }
+            }
+        ),
+        case!("internally tagged struct", Internally::Struct { v: 1 }),
+        case!("internally tagged unit", Internally::Unit),
+        case!("adjacently tagged newtype", Adjacently::Newtype(1)),
+        case!("adjacently tagged struct", Adjacently::Struct { v: 1 }),
+        case!("adjacently tagged unit", Adjacently::Unit),
+        case!("untagged struct", Untagged::Struct { q: 1 }),
+        case!("untagged number", Untagged::Number(7)),
+        case!("untagged text", Untagged::Text("s".into())),
+        case!("untagged unit", Untagged::Nothing),
+        case!("skip_serializing_if, absent", Optional { a: None, b: 0 }),
+        case!(
+            "skip_serializing_if, present",
+            Optional { a: Some(3), b: 9 }
+        ),
+    ]
+}
+
+/// Both oracles, over every representation attribute that can round-trip.
+#[test]
+fn representations_round_trip() {
+    let cases = cases();
+    let width = cases.iter().map(|c| c.what.len()).max().unwrap_or(0);
+    let mut failures = Vec::new();
+
+    println!("\nserde representation attributes\n");
+    for case in &cases {
+        match (case.run)() {
+            Ok(printed) => println!("  = {:<width$}  {printed}", case.what),
+            Err(why) => {
+                println!("  ! {:<width$}  {why}", case.what);
+                failures.push(format!("{}: {why}", case.what));
+            }
+        }
+    }
+    println!();
+
+    assert!(
+        failures.is_empty(),
+        "{} of {} representations failed:\n  {}",
+        failures.len(),
+        cases.len(),
+        failures.join("\n  ")
+    );
+}
+
+/// `#[serde(skip)]` is the one representation neither oracle can satisfy, and
+/// the reason is worth stating precisely: serde never shows the field to
+/// anyone, so it is absent from the datum by construction. Spytial's
+/// inspection mechanism for Rust *is* `Serialize`, so what `Serialize` hides
+/// is outside what any amount of reify work could recover. `Debug` still
+/// prints it, so R-inspect fails, and `Deserialize` fills it from `Default`.
+///
+/// Pinned rather than merely documented, so that a future change to either
+/// side shows up here.
+#[test]
+fn skip_drops_the_field() {
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    struct Skipped {
+        a: i32,
+        #[serde(skip)]
+        b: i32,
+    }
+
+    let why = parity(Skipped { a: 1, b: 2 }).expect_err("#[serde(skip)] cannot round-trip");
+    assert!(
+        why.contains("Skipped { a: 1, b: 2 }") && why.contains("Skipped { a: 1, b: 0 }"),
+        "expected the skipped field to come back as Default, got: {why}"
+    );
+}

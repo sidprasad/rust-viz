@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Added: `from_datum` and `replit` now reconstruct values written through
+  serde's self-describing representations. `#[serde(flatten)]`,
+  `#[serde(untagged)]`, and the internally and adjacently tagged enum forms all
+  buffer a value before they know its type, so they call `deserialize_any`,
+  which reify refused outright — every such type failed to reify at all.
+  `deserialize_any` now answers from the atom's own `type` and outgoing
+  relations. Built-in atom types say what they are; a user-named atom is a
+  struct or an enum variant, told apart by its label, since export labels a
+  struct with the type's name and an externally tagged variant with the
+  variant's name. Two shapes still defeat that and are documented on the
+  method: an enum with a variant named after the enum (`enum E { E }`), and a
+  struct named after one of export's built-in atom types.
+
+  `#[serde(skip)]` remains unrecoverable, and always will be: the field never
+  reaches the datum, so `Deserialize` fills it from `Default` while `Debug`
+  still prints it. That is a limit of `Serialize` as Rust's inspection
+  mechanism, not of the relational form. `eval-corpus` pins it as such.
+
+
 - Fixed: a diagram could not tell `0.0` from `-0.0`. Primitive atoms are
   interned so equal values share one node, and floats were keyed through `==`,
   which calls the two signed zeros equal. The second one serialized therefore
