@@ -43,9 +43,10 @@ jobs:
       - name: Run doc tests
         run: cargo test --workspace --doc
 
-      # Its own workspace, so the runs above do not reach it.
-      - name: Run eval-corpus tests
-        run: cargo test --manifest-path eval-corpus/Cargo.toml
+      # eval-corpus is its own workspace, so the runs above do not reach it.
+      # It has its own job below rather than a step here: the property search
+      # wants a wider run than a three-OS matrix should pay for, and a failure
+      # in it means something different from a build failure.
 
       # Also its own workspace. Fails if macros/src/spec_tables.rs has drifted
       # from templates/vendor/spytial-language.json — i.e. spytial-core was
@@ -53,6 +54,43 @@ jobs:
       # rustfmt is needed because the generator formats its output.
       - name: Check spec tables are current
         run: cargo test --manifest-path spec-codegen/Cargo.toml
+
+  reify-oracles:
+    name: Reify oracles
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      CARGO_TERM_COLOR: always
+      # The suite pins 1024 cases in source so a local `cargo test` stays
+      # quick. CI is where the search has room to run, and a wider search is
+      # the reason this job exists separately from the build matrix.
+      PROPTEST_CASES: 8192
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      # The crate's own round-trip tests, organised by Rust shape. This is
+      # where specific regressions are pinned, so it is worth naming even
+      # though `cargo test --workspace --tests` above also runs it.
+      - name: Run the crate's reify tests
+        run: cargo test --test reify
+
+      # The corpus: the 29-category coverage table, the serde representation
+      # attributes, and the randomized property search over all of them.
+      # Single-threaded and uncaptured so the coverage tables land in the log
+      # in order, which is what makes a failure here readable.
+      - name: Run the reify corpus and property search
+        run: >
+          cargo test --manifest-path eval-corpus/Cargo.toml
+          -- --nocapture --test-threads=1
 
   rustfmt:
     name: Rustfmt

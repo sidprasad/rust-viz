@@ -110,6 +110,67 @@ struct Optional {
     b: i32,
 }
 
+// ── field names that shadow export's built-in relations ──────────────────
+
+/// A struct field named after a built-in relation. Relation names live in one
+/// flat namespace, so `idx` here lands in the same relation as a sequence's
+/// positions, and `value` / `variant_value` in the same ones a newtype struct
+/// and an enum variant use. Reaching these through a self-describing
+/// representation is what makes them interesting: `deserialize_any` has only
+/// the atom to go on, so it must not read a field name as a payload marker.
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+struct FieldIdx {
+    idx: i32,
+}
+
+/// As [`FieldIdx`], for the map-entry relation.
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+struct FieldMapEntry {
+    map_entry: i32,
+}
+
+/// As [`FieldIdx`], for the newtype-struct payload relation.
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+struct FieldValue {
+    value: i32,
+}
+
+/// As [`FieldIdx`], for the enum-variant payload relation.
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+struct FieldVariantValue {
+    variant_value: i32,
+}
+
+/// Forces each shadowing struct through `deserialize_any`.
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[serde(untagged)]
+enum Shadowing {
+    Idx(FieldIdx),
+    MapEntry(FieldMapEntry),
+    Value(FieldValue),
+    VariantValue(FieldVariantValue),
+}
+
+/// Externally tagged variants whose *field* names shadow the relations that
+/// mark a variant's payload. A tuple variant's `idx` is ternary and a field
+/// named `idx` is binary, so arity separates those. `variant_value` alone is
+/// genuinely ambiguous with a newtype variant, and `TwoFields` is the case
+/// that shows one more field is enough to resolve it.
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+enum ExternalShadowed {
+    Idx { idx: i32 },
+    TwoFields { variant_value: i32, other: i32 },
+}
+
+/// Reaches [`ExternalShadowed`] through a flattened parent, so the variant's
+/// atom is read by `deserialize_any` rather than by following the type.
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+struct FlatWithShadowed {
+    #[serde(flatten)]
+    rest: Inner,
+    e: ExternalShadowed,
+}
+
 /// One case: a label and the oracle run for it.
 struct Case {
     what: &'static str,
@@ -173,6 +234,39 @@ fn cases() -> Vec<Case> {
         case!("untagged number", Untagged::Number(7)),
         case!("untagged text", Untagged::Text("s".into())),
         case!("untagged unit", Untagged::Nothing),
+        case!(
+            "untagged struct { idx }",
+            Shadowing::Idx(FieldIdx { idx: 9 })
+        ),
+        case!(
+            "untagged struct { map_entry }",
+            Shadowing::MapEntry(FieldMapEntry { map_entry: 9 })
+        ),
+        case!(
+            "untagged struct { value }",
+            Shadowing::Value(FieldValue { value: 9 })
+        ),
+        case!(
+            "untagged struct { variant_value }",
+            Shadowing::VariantValue(FieldVariantValue { variant_value: 9 })
+        ),
+        case!(
+            "external variant { idx }",
+            FlatWithShadowed {
+                rest: Inner { y: 1 },
+                e: ExternalShadowed::Idx { idx: 9 }
+            }
+        ),
+        case!(
+            "external variant { variant_value, .. }",
+            FlatWithShadowed {
+                rest: Inner { y: 1 },
+                e: ExternalShadowed::TwoFields {
+                    variant_value: 9,
+                    other: 1
+                }
+            }
+        ),
         case!("skip_serializing_if, absent", Optional { a: None, b: 0 }),
         case!(
             "skip_serializing_if, present",

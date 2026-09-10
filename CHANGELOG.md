@@ -16,9 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   relations. Built-in atom types say what they are; a user-named atom is a
   struct or an enum variant, told apart by its label, since export labels a
   struct with the type's name and an externally tagged variant with the
-  variant's name. Two shapes still defeat that and are documented on the
-  method: an enum with a variant named after the enum (`enum E { E }`), and a
-  struct named after one of export's built-in atom types.
+  variant's name. The label is asked first, before any relation name, because
+  a struct is free to have a field called `idx` or `variant_value` and those
+  must read as fields rather than as a variant's payload; where a name really
+  is shared, arity separates them, since a tuple variant's `idx` is ternary and
+  a field of that name is binary. Three pathological shapes still defeat it and
+  are documented on the method: an enum with a variant named after the enum
+  (`enum E { E }`), a struct named after one of export's built-in atom types,
+  and an externally tagged struct variant whose only field is named
+  `variant_value`, which is written exactly like a newtype variant.
 
   `#[serde(skip)]` remains unrecoverable, and always will be: the field never
   reaches the datum, so `Deserialize` fills it from `Default` while `Debug`

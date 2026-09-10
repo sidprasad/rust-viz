@@ -7,6 +7,17 @@
 //! [`Strategy`] over it. A generated value nests categories inside each other
 //! to arbitrary depth, which is the coverage no hand-written list provides.
 //!
+//! # Shape variety, not just value variety
+//!
+//! Nesting alone would exercise one struct shape over and over. Export's
+//! subtler behaviour lives in *shape* rather than in values: relation names
+//! share one flat namespace, so a field name can collide with another type's
+//! field or with a built-in like `idx`, and a relation's position types widen
+//! when its tuples disagree. So the generator also varies field counts (zero,
+//! one, two, three), tuple arities (one, two, three), field names that shadow
+//! every built-in relation ([`Shadowed`]), and one value carrying two
+//! different types that share a field name ([`Nest::Collide`]).
+//!
 //! # Two scalar domains, because there are two kinds of bug
 //!
 //! [`Pool`] selects how wide the scalar generators draw.
@@ -48,6 +59,62 @@ pub struct Node {
     pub left: Box<Nest>,
     /// Right child.
     pub right: Box<Nest>,
+}
+
+/// Exercises `struct` with no fields at all.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct Rec0 {}
+
+/// Exercises `struct` with exactly one field.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct Rec1 {
+    /// The only field.
+    pub only: Box<Nest>,
+}
+
+/// Exercises `struct` with three fields, so relation fan-out from one atom is
+/// not always two.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct Rec3 {
+    /// First field.
+    pub p: Box<Nest>,
+    /// Second field.
+    pub q: Box<Nest>,
+    /// Third field.
+    pub r: Box<Nest>,
+}
+
+/// Every field named after one of export's built-in relations.
+///
+/// Relation names live in one flat namespace, so a field called `idx` lands in
+/// the same relation as a sequence's positions and mixes arities there, and a
+/// field called `value` or `variant_value` competes with the relations a
+/// newtype struct and an enum variant emit. Reconstruction has to bucket by
+/// source atom rather than trust the name.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct Shadowed {
+    /// Shares a name with a sequence's position relation.
+    pub idx: Box<Nest>,
+    /// Shares a name with a map's entry relation.
+    pub map_entry: Box<Nest>,
+    /// Shares a name with a newtype struct's payload relation.
+    pub value: Box<Nest>,
+    /// Shares a name with an enum variant's payload relation.
+    pub variant_value: Box<Nest>,
+}
+
+/// One half of a same-field-name pair; see [`Nest::Collide`].
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct NameA {
+    /// Same name as [`NameB::name`], different type.
+    pub name: Box<Nest>,
+}
+
+/// The other half of the same-field-name pair; see [`Nest::Collide`].
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct NameB {
+    /// Same name as [`NameA::name`], different type.
+    pub name: Box<Nest>,
 }
 
 /// A recursive value covering every category in [`crate::SERDE_DATA_MODEL`].
@@ -114,6 +181,22 @@ pub enum Nest {
     Map(BTreeMap<String, Nest>),
     /// `struct`
     Struct(Node),
+    /// `struct` with no fields.
+    Fields0(Rec0),
+    /// `struct` with one field.
+    Fields1(Rec1),
+    /// `struct` with three fields.
+    Fields3(Rec3),
+    /// `struct` whose every field name shadows a built-in relation.
+    Shadow(Shadowed),
+    /// Two different types carrying the same field name, in one value. The
+    /// flat relation namespace merges them into a single relation whose
+    /// position types widen, so this is the shape that exercises that merge.
+    Collide(NameA, NameB),
+    /// `tuple` of one, so tuple arity is not always two.
+    Tup1((Box<Nest>,)),
+    /// `tuple` of three.
+    Tup3((Box<Nest>, Box<Nest>, Box<Nest>)),
     /// `struct_variant`
     StructVariant {
         /// First field.
@@ -138,7 +221,7 @@ impl Nest {
         // payload-carrying variant kinds; record that step before the payload.
         let own = match self {
             Nest::Nothing => "unit_variant",
-            Nest::TupVariant(..) => "tuple_variant",
+            Nest::TupVariant(..) | Nest::Collide(..) => "tuple_variant",
             Nest::StructVariant { .. } => "struct_variant",
             _ => "newtype_variant",
         };
@@ -208,6 +291,39 @@ impl Nest {
                 out.insert("struct");
                 n.left.collect(out);
                 n.right.collect(out);
+            }
+            Nest::Fields0(_) => drop(out.insert("struct")),
+            Nest::Fields1(n) => {
+                out.insert("struct");
+                n.only.collect(out);
+            }
+            Nest::Fields3(n) => {
+                out.insert("struct");
+                n.p.collect(out);
+                n.q.collect(out);
+                n.r.collect(out);
+            }
+            Nest::Shadow(n) => {
+                out.insert("struct");
+                n.idx.collect(out);
+                n.map_entry.collect(out);
+                n.value.collect(out);
+                n.variant_value.collect(out);
+            }
+            Nest::Collide(a, b) => {
+                out.insert("struct");
+                a.name.collect(out);
+                b.name.collect(out);
+            }
+            Nest::Tup1((a,)) => {
+                out.insert("tuple");
+                a.collect(out);
+            }
+            Nest::Tup3((a, b, c)) => {
+                out.insert("tuple");
+                a.collect(out);
+                b.collect(out);
+                c.collect(out);
             }
             Nest::StructVariant { a, b } => {
                 a.collect(out);
@@ -391,6 +507,7 @@ pub fn nest(floats: Floats, pool: Pool) -> BoxedStrategy<Nest> {
             .prop_map(|b| Nest::Blob(Bytes(b)))
             .boxed(),
         Just(Nest::Nil(())).boxed(),
+        Just(Nest::Fields0(Rec0 {})).boxed(),
         Just(Nest::Unit(UnitStruct)).boxed(),
         Just(Nest::Nothing).boxed(),
         f64s(floats, pool)
@@ -401,26 +518,81 @@ pub fn nest(floats: Floats, pool: Pool) -> BoxedStrategy<Nest> {
             .boxed(),
     ]);
 
-    // depth 4, ~48 nodes, ~4 branches: deep enough to nest a category inside
+    // depth 4, ~64 nodes, ~4 branches: deep enough to nest a category inside
     // three others, small enough that a shrunk counterexample is readable.
-    leaf.prop_recursive(4, 48, 4, move |inner| {
-        prop_oneof![
-            prop::option::of(inner.clone()).prop_map(|o| Nest::Opt(o.map(Box::new))),
-            inner.clone().prop_map(|v| Nest::Wrap(Box::new(v))),
-            prop::collection::vec(inner.clone(), 0..4).prop_map(Nest::Seq),
-            (inner.clone(), inner.clone()).prop_map(|(a, b)| Nest::Tup((Box::new(a), Box::new(b)))),
+    // `Union` rather than `prop_oneof!`, which tops out at ten branches.
+    leaf.prop_recursive(4, 64, 4, move |inner| {
+        Union::new(vec![
+            prop::option::of(inner.clone())
+                .prop_map(|o| Nest::Opt(o.map(Box::new)))
+                .boxed(),
+            inner.clone().prop_map(|v| Nest::Wrap(Box::new(v))).boxed(),
+            prop::collection::vec(inner.clone(), 0..4)
+                .prop_map(Nest::Seq)
+                .boxed(),
             (inner.clone(), inner.clone())
-                .prop_map(|(a, b)| Nest::TupVariant(Box::new(a), Box::new(b))),
-            prop::collection::btree_map(text(pool), inner.clone(), 0..4).prop_map(Nest::Map),
-            (inner.clone(), inner.clone()).prop_map(|(a, b)| Nest::Struct(Node {
-                left: Box::new(a),
-                right: Box::new(b),
-            })),
-            (inner.clone(), inner).prop_map(|(a, b)| Nest::StructVariant {
-                a: Box::new(a),
-                b: Box::new(b),
-            }),
-        ]
+                .prop_map(|(a, b)| Nest::Tup((Box::new(a), Box::new(b))))
+                .boxed(),
+            (inner.clone(), inner.clone())
+                .prop_map(|(a, b)| Nest::TupVariant(Box::new(a), Box::new(b)))
+                .boxed(),
+            prop::collection::btree_map(text(pool), inner.clone(), 0..4)
+                .prop_map(Nest::Map)
+                .boxed(),
+            (inner.clone(), inner.clone())
+                .prop_map(|(a, b)| {
+                    Nest::Struct(Node {
+                        left: Box::new(a),
+                        right: Box::new(b),
+                    })
+                })
+                .boxed(),
+            (inner.clone(), inner.clone())
+                .prop_map(|(a, b)| Nest::StructVariant {
+                    a: Box::new(a),
+                    b: Box::new(b),
+                })
+                .boxed(),
+            // Shape variety, which value-space generation alone does not reach:
+            // field counts other than two, tuple arities other than two, field
+            // names that shadow built-in relations, and two distinct types
+            // sharing one field name inside a single value.
+            inner
+                .clone()
+                .prop_map(|v| Nest::Fields1(Rec1 { only: Box::new(v) }))
+                .boxed(),
+            (inner.clone(), inner.clone(), inner.clone())
+                .prop_map(|(p, q, r)| {
+                    Nest::Fields3(Rec3 {
+                        p: Box::new(p),
+                        q: Box::new(q),
+                        r: Box::new(r),
+                    })
+                })
+                .boxed(),
+            (inner.clone(), inner.clone(), inner.clone(), inner.clone())
+                .prop_map(|(i, m, v, vv)| {
+                    Nest::Shadow(Shadowed {
+                        idx: Box::new(i),
+                        map_entry: Box::new(m),
+                        value: Box::new(v),
+                        variant_value: Box::new(vv),
+                    })
+                })
+                .boxed(),
+            (inner.clone(), inner.clone())
+                .prop_map(|(a, b)| {
+                    Nest::Collide(NameA { name: Box::new(a) }, NameB { name: Box::new(b) })
+                })
+                .boxed(),
+            inner
+                .clone()
+                .prop_map(|a| Nest::Tup1((Box::new(a),)))
+                .boxed(),
+            (inner.clone(), inner.clone(), inner)
+                .prop_map(|(a, b, c)| Nest::Tup3((Box::new(a), Box::new(b), Box::new(c))))
+                .boxed(),
+        ])
     })
     .boxed()
 }

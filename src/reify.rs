@@ -31,7 +31,7 @@
 //! `#[serde(untagged)]`, and the internally and adjacently tagged enum forms.
 //! They call [`Deserializer::deserialize_any`], which answers from the atom's
 //! own `type` and outgoing relations rather than from `T`. See that method for
-//! the two shapes it cannot tell apart.
+//! the three pathological shapes it cannot tell apart.
 //!
 //! What `Serialize` never emits stays unrecoverable, whatever reify does:
 //! `#[serde(skip)]` hides a field from the datum, so `Deserialize` fills it
@@ -294,35 +294,49 @@ impl<'i, 'a> NodeDeserializer<'i, 'a> {
         visitor: V,
     ) -> Result<V::Value, ReifyError> {
         let a = self.atom()?;
-        let relations = self.index.out.get(self.atom_id);
-        let has = |name: &str| relations.is_some_and(|m| m.contains_key(name));
 
-        // `variant_value` and `idx` are emitted only by an enum variant here:
-        // a newtype or tuple *struct* carries its own built-in atom type and
-        // never reaches this method.
-        if has("variant_value") {
-            let inner = self.index.single_target(self.atom_id, "variant_value")?;
-            let payload = VariantPayload::Newtype(self.child(inner));
-            return visitor.visit_map(OneEntry::new(a.label.as_str(), payload));
-        }
-        if has("idx") {
-            let payload = VariantPayload::Tuple(self.index, self.atom_id);
-            return visitor.visit_map(OneEntry::new(a.label.as_str(), payload));
-        }
-
-        // Everything left is field-shaped or empty. Export labels a struct with
-        // its own type name and a variant with the variant's name, which is the
-        // only thing separating `Shape::Rect { w }` from an internally tagged
-        // enum or a plain struct — all three are a bag of named fields.
-        let is_variant = a.label != a.r#type;
-        if !is_variant {
+        // Ask the label first. Export writes a struct's own type name as its
+        // label and an externally tagged variant's *variant* name as its own,
+        // so this is what separates `Shape::Rect { w }` from a plain struct —
+        // both are just a bag of named fields. It has to come before any test
+        // on relation names, because a struct is free to have a field called
+        // `idx` or `variant_value`, which would otherwise read as an enum
+        // variant's payload rather than as the field it is.
+        if a.label == a.r#type {
             return self.deserialize_struct("", &[], visitor);
         }
-        if relations.is_some() {
-            let payload = VariantPayload::Struct(self.index, self.atom_id);
-            return visitor.visit_map(OneEntry::new(a.label.as_str(), payload));
+
+        let label = a.label.as_str();
+        let Some(relations) = self.index.out.get(self.atom_id) else {
+            // No payload at all: a unit variant, which self-describing formats
+            // write as the bare variant name.
+            return visitor.visit_str(label);
+        };
+
+        // A tuple variant's `idx` tuples are ternary — (variant, position,
+        // element). A struct variant with a field *named* `idx` emits binary
+        // ones, so arity tells the two apart rather than the name alone.
+        let is_tuple_variant = relations
+            .get("idx")
+            .is_some_and(|tuples| tuples.iter().any(|t| t.atoms.len() >= 3));
+        if is_tuple_variant {
+            let payload = VariantPayload::Tuple(self.index, self.atom_id);
+            return visitor.visit_map(OneEntry::new(label, payload));
         }
-        visitor.visit_str(a.label.as_str())
+
+        // A newtype variant carries `variant_value` and nothing else. A struct
+        // variant with a single field of that exact name is written the same
+        // way and is read as a newtype variant; that pathology is documented on
+        // `deserialize_any` alongside `enum E { E }`. One further field is
+        // enough to tell them apart, so the ambiguity is as narrow as it looks.
+        if relations.len() == 1 && relations.contains_key("variant_value") {
+            let inner = self.index.single_target(self.atom_id, "variant_value")?;
+            let payload = VariantPayload::Newtype(self.child(inner));
+            return visitor.visit_map(OneEntry::new(label, payload));
+        }
+
+        let payload = VariantPayload::Struct(self.index, self.atom_id);
+        visitor.visit_map(OneEntry::new(label, payload))
     }
 }
 
@@ -349,9 +363,24 @@ impl<'i, 'a, 'de> Deserializer<'de> for NodeDeserializer<'i, 'a> {
     /// the rest say what they are. A user-named atom is a struct or an enum
     /// variant, and those are told apart by `label`: export writes the type's
     /// own name as the label of a struct, and the *variant's* name as the label
-    /// of an externally tagged variant. An enum whose variant is named after
-    /// the enum itself (`enum E { E }`) defeats that and reads back as a
-    /// struct; so would a struct named after one of the built-in atom types.
+    /// of an externally tagged variant.
+    ///
+    /// Three shapes defeat that, all of them pathological and all of them
+    /// documented rather than guessed at:
+    ///
+    /// * `enum E { E }` — a variant named after its own enum, which reads back
+    ///   as a struct.
+    /// * A struct named after one of export's built-in atom types (`map`,
+    ///   `sequence`, `unit`, ...), which is answered as that built-in.
+    /// * `enum E { V { variant_value: T } }` — an externally tagged struct
+    ///   variant whose only field is named `variant_value`, which is written
+    ///   exactly like the newtype variant `E::V(T)` and reads back as one. A
+    ///   second field is enough to separate them.
+    ///
+    /// Nothing else collides. A struct field named `idx` is binary where a
+    /// tuple variant's `idx` is ternary, and a field named `map_entry` or
+    /// `value` only ever competes with a built-in atom type, never with a
+    /// user-named one.
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, ReifyError> {
         let a = self.atom()?;
         match a.r#type.as_str() {
