@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 218c2ede218a2430ad3784484283e223b95244285acf131258a63b991ce2881a # shrinks to v = Seq([Seq([F64(-0.0), F64(0.0)])])
+cc f6469d8a3f8cbd90f0840f3f66365400b3c13bc221cf169e977a7275070b9ff4 # shrinks to v = TupVariant(Wrap(F64(-0.0)), Map({"": F64(0.0)}))
+cc 6dda0ac5efeb1bf8a7d7c2e988f770b19aaf5d6d428d71943ec8e4400b6a583e # shrinks to v = Struct(Node { left: TupVariant(Newtype(Meters(-0.0)), Newtype(Meters(0.0))), right: Bool(true) })

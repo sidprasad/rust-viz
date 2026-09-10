@@ -16,6 +16,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   non-NaN floats `==` and bit equality agree everywhere except at zero, and NaN
   still gets a fresh atom per occurrence, since `==` is no guide there either.
 
+- Added: `eval-corpus` now generates its values as well as listing them.
+  `spytial_eval_corpus::pbt` is a proptest generator over `Nest`, one recursive
+  type whose variants span all 29 serde categories, so the two reify oracles
+  are checked against arbitrary nestings rather than a fixed list. Scalars are
+  drawn from either a wide edge-biased domain, which hunts value-parsing bugs,
+  or a two-values-per-type domain, which hunts atom-interning bugs by making
+  repeats near-certain; the narrow domain is what found the signed-zero
+  collision above. A fourth test measures that the generator still reaches all
+  29 categories, since randomization removes the coverage a fixed list has by
+  construction. The curated list stays: it pins the named extremes and prints
+  the deterministic coverage table. None of this reaches the published crate —
+  `eval-corpus` is a separate, unpublished workspace that depends on `spytial`
+  and is never depended on by it.
+
 - Fixed: a captured value could break, or script, the standalone diagram
   page. `diagram()` and `diagram_with_spec()` pasted the JSON datum and the
   YAML spec into JavaScript template literals by plain substitution, so a
