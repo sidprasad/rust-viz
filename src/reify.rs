@@ -392,6 +392,10 @@ impl<'i, 'a, 'de> Deserializer<'de> for NodeDeserializer<'i, 'a> {
             "f32" | "f64" => visitor.visit_f64(self.parse()?),
             "char" => self.deserialize_char(visitor),
             "string" => visitor.visit_str(a.label.as_str()),
+            // Without this arm a byte array falls through to the user-named
+            // branch, where its `[1, 2, 3]` label is handed over as a variant
+            // name and the byte-buffer visitor never sees any bytes.
+            "bytes" => self.deserialize_bytes(visitor),
             "unit" | "unit_struct" => visitor.visit_unit(),
             "None" => visitor.visit_none(),
             "Some" => {

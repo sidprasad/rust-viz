@@ -14,7 +14,7 @@
 //! not Spytial's.
 
 use serde::{Deserialize, Serialize};
-use spytial_eval_corpus::parity;
+use spytial_eval_corpus::{parity, Bytes};
 
 // ── plain renaming ───────────────────────────────────────────────────────
 
@@ -267,12 +267,49 @@ fn cases() -> Vec<Case> {
                 }
             }
         ),
+        case!(
+            "untagged byte array",
+            UntaggedBytes::Blob(Bytes(vec![1, 2, 3]))
+        ),
+        case!(
+            "untagged byte array, empty",
+            UntaggedBytes::Blob(Bytes(Vec::new()))
+        ),
+        case!(
+            "flattened byte array",
+            FlatWithBytes {
+                rest: Inner { y: 1 },
+                b: Bytes(vec![0, 255])
+            }
+        ),
         case!("skip_serializing_if, absent", Optional { a: None, b: 0 }),
         case!(
             "skip_serializing_if, present",
             Optional { a: Some(3), b: 9 }
         ),
     ]
+}
+
+// ── byte arrays under a self-describing representation ───────────────────
+
+/// A byte array is the one scalar whose atom label is itself bracketed
+/// (`[1, 2, 3]`). Every other case in this file is built from named or indexed
+/// parts, so a byte array is the only way to reach `deserialize_any` with a
+/// scalar that *looks* structural. A missing arm there hands the label over as
+/// an enum variant name instead of bytes.
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[serde(untagged)]
+enum UntaggedBytes {
+    Blob(Bytes),
+}
+
+/// The same byte array, buffered by a flattened parent rather than an
+/// untagged enum.
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+struct FlatWithBytes {
+    #[serde(flatten)]
+    rest: Inner,
+    b: Bytes,
 }
 
 /// Both oracles, over every representation attribute that can round-trip.
