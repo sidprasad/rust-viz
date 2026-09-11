@@ -17,8 +17,12 @@
 //! compile time; a map key stays an atom inside the tuple because it's runtime
 //! data. Enum variants follow the same rules, keyed on the variant's atom.
 //! Primitive values are identified by the value Serde exposes, so equal values
-//! of the same exposed type share an atom. Composite values remain distinct
-//! serialized occurrences because Serde does not expose their Rust identity.
+//! of the same exposed type share an atom. Floats are the exception, and are
+//! identified by bit pattern instead: `==` is the wrong guide at both ends of
+//! its range, calling every NaN unequal to itself and the two signed zeros
+//! equal, while `{:?}` prints each NaN alike and the zeros apart. Composite
+//! values remain distinct serialized occurrences because Serde does not expose
+//! their Rust identity.
 
 use crate::jsondata::*;
 use crate::spytial_annotations::SpytialDecorators;
@@ -402,9 +406,13 @@ impl<'a> Serializer for &'a mut JsonDataSerializer {
             // NaN is not equal to itself under Rust's PartialEq semantics.
             Ok(self.emit_atom("f32", &label))
         } else {
-            // Rust considers -0.0 and 0.0 equal, despite their different bits.
-            let bits = if v == 0.0 { 0 } else { v.to_bits() };
-            Ok(self.get_or_create_value_atom_with_key("f32", &bits.to_string(), &label))
+            // Floats are keyed by bit pattern, not by `==`. The two agree on
+            // every non-NaN value except the signed zeros, which `==` calls
+            // equal and `{:?}` prints differently ("0" vs "-0"). Sharing one
+            // atom would make `[0.0, -0.0]` render as `[0.0, 0.0]`: the second
+            // occurrence would inherit the first's label, so the diagram would
+            // lose a distinction the printed value shows.
+            Ok(self.get_or_create_value_atom_with_key("f32", &v.to_bits().to_string(), &label))
         }
     }
 
@@ -413,8 +421,7 @@ impl<'a> Serializer for &'a mut JsonDataSerializer {
         if v.is_nan() {
             Ok(self.emit_atom("f64", &label))
         } else {
-            let bits = if v == 0.0 { 0 } else { v.to_bits() };
-            Ok(self.get_or_create_value_atom_with_key("f64", &bits.to_string(), &label))
+            Ok(self.get_or_create_value_atom_with_key("f64", &v.to_bits().to_string(), &label))
         }
     }
 

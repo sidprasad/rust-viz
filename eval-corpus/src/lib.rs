@@ -12,6 +12,11 @@
 //! * **R-inspect** — `format!("{:?}", v) == replit(export(v))`. The datum
 //!   reproduces Rust's textual inspection output.
 //!
+//! [`cases`] pins one value per category and the extremes worth naming. It
+//! cannot search, so [`pbt`] adds a proptest generator over the same 29
+//! categories, nested to arbitrary depth. The two are complementary: the list
+//! is the deterministic coverage table, the generator is the search.
+//!
 //! This crate exists so its two consumers cannot drift apart:
 //! `../tests/serde_data_model.rs` enforces the corpus in CI, and
 //! `../../reify-eval/rust.ipynb` imports the very same crate to narrate the
@@ -19,6 +24,8 @@
 //! `spytial` crate, so evaluation machinery never reaches the published API.
 
 #![deny(missing_docs)]
+
+pub mod pbt;
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
@@ -169,18 +176,18 @@ where
 // ──────────────────────────────────────────────
 
 /// Exercises `unit_struct`.
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct UnitStruct;
 
 /// Exercises `newtype_struct`.
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Meters(
     /// The wrapped length.
     pub f64,
 );
 
 /// Exercises `tuple_struct`.
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Pair(
     /// First component.
     pub i32,
@@ -245,7 +252,7 @@ impl Debug for Temperature {
 /// Exercises `byte array`: `Vec<u8>` serializes as a *seq* by default; only
 /// `serialize_bytes` reaches the byte-array category, which is what the
 /// `#[serde(with)]` shim forces.
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Bytes(
     /// The raw bytes.
     #[serde(with = "byte_string")]

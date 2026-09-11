@@ -22,6 +22,21 @@
 //! common case stays a single clean atom) but inserts a `Some` wrapper atom when
 //! the inner is a `None`/`Some`, so `Some(None)` is distinct from `None` and any
 //! nesting depth is recoverable.
+//!
+//! # Self-describing reconstruction
+//!
+//! Reconstruction is type-driven: `T` says what to expect and this module goes
+//! looking for it. Three serde representations cannot work that way, because
+//! they buffer a value *before* they know its type — `#[serde(flatten)]`,
+//! `#[serde(untagged)]`, and the internally and adjacently tagged enum forms.
+//! They call [`Deserializer::deserialize_any`], which answers from the atom's
+//! own `type` and outgoing relations rather than from `T`. See that method for
+//! the three pathological shapes it cannot tell apart.
+//!
+//! What `Serialize` never emits stays unrecoverable, whatever reify does:
+//! `#[serde(skip)]` hides a field from the datum, so `Deserialize` fills it
+//! from `Default` and `{:?}` disagrees. That is a limit of `Serialize` as the
+//! inspection mechanism, not of the relational form.
 
 use crate::jsondata::{IAtom, ITuple, JsonDataInstance};
 use serde::de::{
@@ -266,6 +281,63 @@ impl<'i, 'a> NodeDeserializer<'i, 'a> {
             ))
         })
     }
+
+    /// The user-named-atom half of [`Deserializer::deserialize_any`]: an atom
+    /// whose `type` is a struct or enum name rather than one of export's
+    /// built-ins.
+    ///
+    /// A struct becomes a map of its fields. An externally tagged enum variant
+    /// becomes the single-entry map self-describing formats use for one,
+    /// `{variant: payload}`, or the bare variant name when it carries nothing.
+    fn deserialize_named_any<'de, V: Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, ReifyError> {
+        let a = self.atom()?;
+
+        // Ask the label first. Export writes a struct's own type name as its
+        // label and an externally tagged variant's *variant* name as its own,
+        // so this is what separates `Shape::Rect { w }` from a plain struct —
+        // both are just a bag of named fields. It has to come before any test
+        // on relation names, because a struct is free to have a field called
+        // `idx` or `variant_value`, which would otherwise read as an enum
+        // variant's payload rather than as the field it is.
+        if a.label == a.r#type {
+            return self.deserialize_struct("", &[], visitor);
+        }
+
+        let label = a.label.as_str();
+        let Some(relations) = self.index.out.get(self.atom_id) else {
+            // No payload at all: a unit variant, which self-describing formats
+            // write as the bare variant name.
+            return visitor.visit_str(label);
+        };
+
+        // A tuple variant's `idx` tuples are ternary — (variant, position,
+        // element). A struct variant with a field *named* `idx` emits binary
+        // ones, so arity tells the two apart rather than the name alone.
+        let is_tuple_variant = relations
+            .get("idx")
+            .is_some_and(|tuples| tuples.iter().any(|t| t.atoms.len() >= 3));
+        if is_tuple_variant {
+            let payload = VariantPayload::Tuple(self.index, self.atom_id);
+            return visitor.visit_map(OneEntry::new(label, payload));
+        }
+
+        // A newtype variant carries `variant_value` and nothing else. A struct
+        // variant with a single field of that exact name is written the same
+        // way and is read as a newtype variant; that pathology is documented on
+        // `deserialize_any` alongside `enum E { E }`. One further field is
+        // enough to tell them apart, so the ambiguity is as narrow as it looks.
+        if relations.len() == 1 && relations.contains_key("variant_value") {
+            let inner = self.index.single_target(self.atom_id, "variant_value")?;
+            let payload = VariantPayload::Newtype(self.child(inner));
+            return visitor.visit_map(OneEntry::new(label, payload));
+        }
+
+        let payload = VariantPayload::Struct(self.index, self.atom_id);
+        visitor.visit_map(OneEntry::new(label, payload))
+    }
 }
 
 macro_rules! deserialize_parsed {
@@ -279,10 +351,66 @@ macro_rules! deserialize_parsed {
 impl<'i, 'a, 'de> Deserializer<'de> for NodeDeserializer<'i, 'a> {
     type Error = ReifyError;
 
-    fn deserialize_any<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, ReifyError> {
-        Err(ReifyError::msg(
-            "deserialize_any is unsupported: spytial reify is type-driven, pass a concrete T",
-        ))
+    /// Reconstruct without being told what to expect, by reading the atom's own
+    /// `type` and outgoing relations.
+    ///
+    /// Reify is type-driven everywhere else, and this method exists for the
+    /// three serde representations that buffer a value before they know its
+    /// type: `#[serde(flatten)]`, `#[serde(untagged)]`, and internally or
+    /// adjacently tagged enums. All three ask the format to describe itself.
+    ///
+    /// Built-in atom types answer directly — `"map"`, `"sequence"`, `"i32"` and
+    /// the rest say what they are. A user-named atom is a struct or an enum
+    /// variant, and those are told apart by `label`: export writes the type's
+    /// own name as the label of a struct, and the *variant's* name as the label
+    /// of an externally tagged variant.
+    ///
+    /// Three shapes defeat that, all of them pathological and all of them
+    /// documented rather than guessed at:
+    ///
+    /// * `enum E { E }` — a variant named after its own enum, which reads back
+    ///   as a struct.
+    /// * A struct named after one of export's built-in atom types (`map`,
+    ///   `sequence`, `unit`, ...), which is answered as that built-in.
+    /// * `enum E { V { variant_value: T } }` — an externally tagged struct
+    ///   variant whose only field is named `variant_value`, which is written
+    ///   exactly like the newtype variant `E::V(T)` and reads back as one. A
+    ///   second field is enough to separate them.
+    ///
+    /// Nothing else collides. A struct field named `idx` is binary where a
+    /// tuple variant's `idx` is ternary, and a field named `map_entry` or
+    /// `value` only ever competes with a built-in atom type, never with a
+    /// user-named one.
+    fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, ReifyError> {
+        let a = self.atom()?;
+        match a.r#type.as_str() {
+            "bool" => visitor.visit_bool(self.parse()?),
+            "i8" | "i16" | "i32" | "i64" => visitor.visit_i64(self.parse()?),
+            "i128" => visitor.visit_i128(self.parse()?),
+            "u8" | "u16" | "u32" | "u64" => visitor.visit_u64(self.parse()?),
+            "u128" => visitor.visit_u128(self.parse()?),
+            "f32" | "f64" => visitor.visit_f64(self.parse()?),
+            "char" => self.deserialize_char(visitor),
+            "string" => visitor.visit_str(a.label.as_str()),
+            // Without this arm a byte array falls through to the user-named
+            // branch, where its `[1, 2, 3]` label is handed over as a variant
+            // name and the byte-buffer visitor never sees any bytes.
+            "bytes" => self.deserialize_bytes(visitor),
+            "unit" | "unit_struct" => visitor.visit_unit(),
+            "None" => visitor.visit_none(),
+            "Some" => {
+                let inner = self.index.single_target(self.atom_id, "value")?;
+                visitor.visit_some(self.child(inner))
+            }
+            // A newtype struct is transparent in every self-describing format.
+            "newtype_struct" => {
+                let inner = self.index.single_target(self.atom_id, "value")?;
+                self.child(inner).deserialize_any(visitor)
+            }
+            "sequence" | "tuple" | "tuple_struct" => self.deserialize_seq(visitor),
+            "map" => self.deserialize_map(visitor),
+            _ => self.deserialize_named_any(visitor),
+        }
     }
 
     deserialize_parsed!(deserialize_bool, visit_bool, bool);
@@ -651,5 +779,86 @@ impl<'a, 'de> Deserializer<'de> for IdentDeserializer<'a> {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
         bytes byte_buf option unit unit_struct newtype_struct seq tuple
         tuple_struct map struct enum identifier ignored_any
+    }
+}
+
+/// The payload side of the single-entry map an externally tagged enum variant
+/// takes in a self-describing format. Reached only from
+/// [`NodeDeserializer::deserialize_named_any`], where the variant's shape is
+/// already known, so `deserialize_any` is the only method that has to do work.
+#[derive(Clone, Copy)]
+enum VariantPayload<'i, 'a> {
+    /// `Variant(x)` — the payload is the single atom `x`.
+    Newtype(NodeDeserializer<'i, 'a>),
+    /// `Variant(a, b)` — the payload is the variant atom's `idx` elements.
+    Tuple(&'i Index<'a>, &'a str),
+    /// `Variant { a, b }` — the payload is the variant atom's field relations.
+    Struct(&'i Index<'a>, &'a str),
+}
+
+impl<'i, 'a, 'de> Deserializer<'de> for VariantPayload<'i, 'a> {
+    type Error = ReifyError;
+
+    fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, ReifyError> {
+        match self {
+            VariantPayload::Newtype(node) => node.deserialize_any(visitor),
+            VariantPayload::Tuple(index, atom_id) => visitor.visit_seq(SeqWalker {
+                index,
+                elems: index.seq_elems(atom_id),
+                pos: 0,
+            }),
+            VariantPayload::Struct(index, atom_id) => visitor.visit_map(StructWalker {
+                index,
+                fields: index.struct_fields(atom_id),
+                pos: 0,
+            }),
+        }
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+        bytes byte_buf option unit unit_struct newtype_struct seq tuple
+        tuple_struct map struct enum identifier ignored_any
+    }
+}
+
+/// A map of exactly one entry, keyed by a fixed name: the shape a
+/// self-describing format gives an externally tagged enum variant.
+struct OneEntry<'i, 'a> {
+    key: Option<&'a str>,
+    value: VariantPayload<'i, 'a>,
+}
+
+impl<'i, 'a> OneEntry<'i, 'a> {
+    fn new(key: &'a str, value: VariantPayload<'i, 'a>) -> Self {
+        OneEntry {
+            key: Some(key),
+            value,
+        }
+    }
+}
+
+impl<'i, 'a, 'de> MapAccess<'de> for OneEntry<'i, 'a> {
+    type Error = ReifyError;
+
+    fn next_key_seed<K: DeserializeSeed<'de>>(
+        &mut self,
+        seed: K,
+    ) -> Result<Option<K::Value>, ReifyError> {
+        match self.key.take() {
+            Some(k) => seed.deserialize(IdentDeserializer(k)).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    fn next_value_seed<V: DeserializeSeed<'de>>(
+        &mut self,
+        seed: V,
+    ) -> Result<V::Value, ReifyError> {
+        seed.deserialize(self.value)
+    }
+
+    fn size_hint(&self) -> Option<usize> {
+        Some(usize::from(self.key.is_some()))
     }
 }

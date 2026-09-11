@@ -382,10 +382,11 @@ fn primitive_atoms_follow_rust_value_equality() {
         relation(&inst, "first_string").tuples[0].atoms[1],
         relation(&inst, "second_string").tuples[0].atoms[1],
     );
-    assert_eq!(
+    assert_ne!(
         relation(&inst, "positive_zero").tuples[0].atoms[1],
         relation(&inst, "negative_zero").tuples[0].atoms[1],
-        "Rust considers positive and negative zero equal",
+        "`==` calls the signed zeros equal but `{{:?}}` prints them differently, \
+         so they are keyed by bit pattern and kept apart",
     );
     assert_ne!(
         relation(&inst, "first_nan").tuples[0].atoms[1],

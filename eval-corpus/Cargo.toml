@@ -16,3 +16,8 @@ publish = false
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 spytial = { path = ".." }
+# A normal dependency, not a dev-dependency: the generator lives in `src/pbt.rs`
+# so `../../reify-eval/rust.ipynb` can draw from the same strategies the CI
+# suite does. Nothing in `spytial` sees this — the dependency arrow points from
+# the corpus to the crate, never back.
+proptest = "1"
