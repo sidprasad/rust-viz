@@ -151,13 +151,13 @@ case escapes both oracles.
 
 ## 6. Current exemptions
 
-Three exemptions in 102 hand-written cases.
+Three exemptions in 102 hand-written cases. All three are in `src/lib.rs`.
 
-| Case | Source | Waives | Witness |
-| --- | --- | --- | --- |
-| `HashMap::from([..])` | `src/lib.rs:411` | R-inspect | `a == b && Debug(a) != Debug(b)` |
-| `f64::NAN` | `src/lib.rs:365` | R-eq | `f64::NAN != f64::NAN` |
-| `Shape::Radius(f64::NAN)` | `src/lib.rs:391` | R-eq | `f64::NAN != f64::NAN` |
+| Case | Waives | Witness |
+| --- | --- | --- |
+| `HashMap::from([..])` | R-inspect | `a == b && Debug(a) != Debug(b)` |
+| `f64::NAN` | R-eq | `f64::NAN != f64::NAN` |
+| `Shape::Radius(f64::NAN)` | R-eq | `f64::NAN != f64::NAN` |
 
 The witnesses are not yet encoded as tests.
 
@@ -180,9 +180,9 @@ Measured on branch `reify-pbt-and-signed-zero`.
 
 Corpus size: 75 data-model cases, 27 serde-representation cases.
 
-## 8. Statements for the paper
+## 8. Stating the result
 
-Use this form of the claim:
+State the result in this form:
 
 > For every value in the corpus, the Spytial datum determines the host's
 > printed rendering, up to choices that the host leaves undetermined.
